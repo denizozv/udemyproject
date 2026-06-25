@@ -1172,6 +1172,22 @@ kurs sahiplik: sahip düzenler/pasife alır ✓, başkası→403 ✓; eğitmen e
 > doğrulandı. Sahiplik kuralları, endpoint fonksiyonları `kullanici` ile doğrudan
 > çağrılarak test edildi.
 
+### Adım 25 — Kapatılan boşluklar: FR8 acc8/acc9 + FR6 acc7
+
+**1) FR8 acc8/acc9 — ödeme durumuna göre sepet:**
+- `POST /orders/checkout` artık sepeti **temizlemez** (sadece ORDER + ORDER_ITEM
+  + PENDING PAYMENT oluşturur).
+- `PATCH /payments/{id}/status` → **COMPLETED** olunca siparişi veren kullanıcının
+  sepeti temizlenir (acc8); **FAILED** olunca sepet **korunur** (acc9). REFUNDED →
+  erişim zaten yalnızca COMPLETED'dan türetildiği için otomatik kalkar (acc11).
+
+**2) FR6 acc7 — değerlendirme yetkisi:**
+- `PUT /reviews/{id}` → yalnızca **sahibi** düzenleyebilir (aksi 403).
+- `DELETE /reviews/{id}` → **sahibi veya Admin** kaldırabilir (aksi 403).
+
+**Test:** checkout sepeti korur → FAILED korur → COMPLETED temizler ✓; review
+sahip düzenler/başkası 403/admin siler ✓.
+
 ### Bilinçli olarak KAPSAM DIŞI bırakılanlar
 - **Hesap kilidi** (5 hatalı giriş — CLAUDE acc11) yok; **anonimleştirme batch**'i
   yerine doğrudan kalıcı silme (BİZ FR3 acc4 tercih edildi).

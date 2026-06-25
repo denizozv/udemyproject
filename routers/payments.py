@@ -193,11 +193,14 @@ def odeme_getir(payment_id: int):
     summary="Ödeme durumunu değiştir",
     description=(
         "Ödemenin durumunu günceller (örn. PENDING → COMPLETED/FAILED/REFUNDED).\n\n"
-        "**İş kuralları:**\n"
+        "**İş kuralları + yan etkiler (FR8 acc8/9/11):**\n"
         "- [R3] Ödeme yoksa **404**.\n"
-        "- [R-status] Yeni `payment_status_id` aktif bir durum olmalı → **400**.\n\n"
-        "_Not: Durum geçişlerinin yan etkileri (sepeti pasife alma, kurs erişimi, "
-        "iade ile erişim kaldırma — acc8-11) checkout/erişim akışında ele alınacaktır._"
+        "- [R-status] Yeni `payment_status_id` aktif bir durum olmalı → **400**.\n"
+        "- **COMPLETED** olunca kullanıcının sepeti temizlenir ve kurslara erişim "
+        "doğar (acc8).\n"
+        "- **FAILED** olunca sepet korunur (acc9).\n"
+        "- **REFUNDED** olunca ilgili kurslara erişim otomatik kalkar (acc11; erişim "
+        "yalnızca COMPLETED'dan türetildiği için)."
     ),
     responses={
         404: {"description": "Ödeme bulunamadı."},
@@ -223,6 +226,19 @@ def odeme_durumu_degistir(payment_id: int, payload: PaymentStatusChange):
             "UPDATE payments SET payment_status_id = ? WHERE id = ?",
             (payload.payment_status_id, payment_id),
         )
+
+        # FR8 acc8: ödeme COMPLETED'a geçtiyse, siparişi veren kullanıcının sepeti
+        # temizlenir. (FAILED'da hiçbir şey yapılmaz -> sepet korunur, acc9.)
+        yeni_kod = cursor.execute(
+            "SELECT code FROM payment_statuses WHERE id = ?", (payload.payment_status_id,)
+        ).fetchone()["code"]
+        if yeni_kod.upper() == "COMPLETED":
+            cursor.execute(
+                "DELETE FROM cart_items WHERE cart_id IN ("
+                "  SELECT id FROM carts WHERE user_id = (SELECT user_id FROM orders WHERE id = ?))",
+                (row["order_id"],),
+            )
+
         conn.commit()
         guncel = cursor.execute("SELECT * FROM payments WHERE id = ?", (payment_id,)).fetchone()
         return _satiri_cevir(guncel)

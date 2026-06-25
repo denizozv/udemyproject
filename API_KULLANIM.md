@@ -787,7 +787,8 @@ Kurs değerlendirmeleri (puan + yorum). Tüm adresler `/reviews` ile başlar
 | **Adres** | `/reviews/{id}` |
 | **Metod** | `PUT` |
 | **İş** | rating + comment güncellenir (acc7). |
-| **İlgili kural** | [R3] 404; [R1] rating 1-5→422 |
+| **Yetki** | `Authorization: Bearer <token>` — yalnızca **sahibi** (aksi 403) |
+| **İlgili kural** | [R3] 404; [R1] rating 1-5→422; sahibi değilse 403 |
 
 **Örnek istek:** `{ "rating": 4, "comment": "Icerik guzel ama biraz hizli" }`
 
@@ -797,7 +798,8 @@ Kurs değerlendirmeleri (puan + yorum). Tüm adresler `/reviews` ile başlar
 | **Adres** | `/reviews/{id}` |
 | **Metod** | `DELETE` |
 | **İş** | deleted_date=now (acc7). Sonra kullanıcı tekrar değerlendirebilir. |
-| **İlgili kural** | [R3] 404; zaten pasifse idempotent |
+| **Yetki** | `Authorization: Bearer <token>` — **sahibi veya Admin** (aksi 403) |
+| **İlgili kural** | [R3] 404; sahibi/Admin değilse 403; zaten pasifse idempotent |
 
 ---
 
@@ -999,6 +1001,7 @@ Sipariş ödemeleri (sipariş başına bir ödeme). Tüm adresler `/payments` il
 | **Adres** | `/payments/{id}/status` |
 | **Metod** | `PATCH` |
 | **İş** | Durumu değiştirir (örn. COMPLETED/FAILED/REFUNDED). |
+| **Yan etki** | **COMPLETED** → kullanıcının sepeti temizlenir + kurslara erişim doğar (acc8); **FAILED** → sepet korunur (acc9); **REFUNDED** → erişim kalkar (acc11) |
 | **İlgili kural** | [R3] 404; yeni durum aktif değilse→400 |
 
 **Örnek istek:** `{ "payment_status_id": 2 }`
@@ -1014,7 +1017,7 @@ Sepetten tek adımda sipariş + kalemler + ödeme üretir ve sepeti temizler.
 |---|---|
 | **Adres** | `/orders/checkout` |
 | **Metod** | `POST` |
-| **Ne işe yarar** | Sepeti siparişe dönüştürür: ORDER + ORDER_ITEM'lar (fiyat snapshot) + PENDING PAYMENT; sepeti temizler. |
+| **Ne işe yarar** | Sepeti siparişe dönüştürür: ORDER + ORDER_ITEM'lar (fiyat snapshot) + PENDING PAYMENT. Sepet bu aşamada **temizlenmez**; ödeme COMPLETED olunca temizlenir (acc8). |
 | **İlgili FR** | FR8 acc3/acc4/acc5/acc6/acc7 |
 
 **Örnek istek:**

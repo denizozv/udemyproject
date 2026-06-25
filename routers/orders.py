@@ -137,7 +137,8 @@ def siparis_getir(order_id: int):
         "(`unit_price` = kursun o anki fiyatı — snapshot, acc5).\n"
         "2) `total_price` = kalemlerin toplamı (acc6).\n"
         "3) PENDING durumunda PAYMENT oluşturulur (acc7).\n"
-        "4) Sepet temizlenir (CART_ITEMS silinir).\n\n"
+        "4) Sepet bu aşamada TEMİZLENMEZ; ödeme COMPLETED olunca temizlenir "
+        "(acc8), FAILED olursa korunur (acc9).\n\n"
         "**İş kuralları:**\n"
         "- [R1] `address` zorunlu → 422 (acc3).\n"
         "- [R-user] `user_id` mevcut olmalı → **400**.\n"
@@ -229,9 +230,9 @@ def checkout(payload: CheckoutRequest):
             (order_id, payload.payment_method_id, pending["id"], payload.address),
         )
 
-        # 5) Sepeti temizle
-        cursor.execute("DELETE FROM cart_items WHERE cart_id = ?", (cart_id,))
-
+        # NOT: Sepet checkout'ta TEMİZLENMEZ. FR8 acc8 gereği sepet, ödeme
+        # COMPLETED'a geçtiğinde temizlenir; acc9 gereği ödeme FAILED olursa
+        # sepet korunur. Bu mantık PATCH /payments/{id}/status içindedir.
         conn.commit()
 
         # Sonuç: oluşan kayıtları topla

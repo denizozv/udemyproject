@@ -19,8 +19,9 @@ ERTELENEN:
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from auth_deps import aktif_kullanici
 from database import get_connection
 from models.review import ReviewCreate, ReviewResponse, ReviewUpdate
 from routers.order_items import kurs_satin_alindi_mi
@@ -201,7 +202,11 @@ def degerlendirme_getir(review_id: int):
         422: {"description": "Doğrulama hatası (rating aralık dışı)."},
     },
 )
-def degerlendirme_guncelle(review_id: int, payload: ReviewUpdate):
+def degerlendirme_guncelle(
+    review_id: int,
+    payload: ReviewUpdate,
+    kullanici: dict = Depends(aktif_kullanici),
+):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -210,6 +215,12 @@ def degerlendirme_guncelle(review_id: int, payload: ReviewUpdate):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{review_id} id'li değerlendirme bulunamadı.",
+            )
+        # FR6 acc7: kullanıcı yalnızca KENDİ değerlendirmesini düzenleyebilir.
+        if row["user_id"] != kullanici["id"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Yalnızca kendi değerlendirmenizi düzenleyebilirsiniz.",
             )
         cursor.execute(
             "UPDATE reviews SET rating = ?, comment = ? WHERE id = ?",
@@ -234,7 +245,7 @@ def degerlendirme_guncelle(review_id: int, payload: ReviewUpdate):
     ),
     responses={404: {"description": "Değerlendirme bulunamadı."}},
 )
-def degerlendirme_kaldir(review_id: int):
+def degerlendirme_kaldir(review_id: int, kullanici: dict = Depends(aktif_kullanici)):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -243,6 +254,12 @@ def degerlendirme_kaldir(review_id: int):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{review_id} id'li değerlendirme bulunamadı.",
+            )
+        # FR6 acc7: değerlendirmeyi sahibi VEYA bir Admin (uygunsuz içerik) kaldırabilir.
+        if row["user_id"] != kullanici["id"] and "Admin" not in kullanici["roles"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bu değerlendirmeyi yalnızca sahibi veya bir Admin kaldırabilir.",
             )
         if row["deleted_date"] is not None:
             return _satiri_cevir(row)  # zaten kaldırılmış, idempotent

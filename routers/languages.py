@@ -194,11 +194,15 @@ def dil_guncelle(language_id: int, payload: LanguageUpdate):
     summary="Dili pasife al",
     description=(
         "Dili silmek yerine **pasife alır** (is_active=0).\n\n"
-        "**İş kuralı:** [R3] Dil yoksa **404**.\n\n"
-        "_Not: [R4] 'bir dile bağlı aktif kurs varken pasife alınamaz' kuralı "
-        "COURSES tablosu eklendiğinde buraya eklenecektir._"
+        "**İş kuralları:**\n"
+        "- [R3] Dil yoksa **404**.\n"
+        "- [R4] Bu dil **aktif bir kursta** kullanılıyorsa pasife alınamaz → "
+        "**409** (FR10 acc6)."
     ),
-    responses={404: {"description": "Dil bulunamadı."}},
+    responses={
+        404: {"description": "Dil bulunamadı."},
+        409: {"description": "Dil aktif bir kursta kullanılıyor; pasife alınamaz."},
+    },
 )
 def dil_pasiflestir(language_id: int):
     conn = get_connection()
@@ -211,6 +215,15 @@ def dil_pasiflestir(language_id: int):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{language_id} id'li dil bulunamadı.",
+            )
+        # [R4] Aktif bir kurs bu dili kullanıyorsa pasife alınamaz (FR10 acc6).
+        kullaniliyor = cursor.execute(
+            "SELECT 1 FROM courses WHERE language_id = ? AND is_active = 1", (language_id,)
+        ).fetchone()
+        if kullaniliyor is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Bu dil aktif bir kursta kullanılıyor; pasife alınamaz.",
             )
         cursor.execute(
             "UPDATE languages SET is_active = 0 WHERE id = ?", (language_id,)

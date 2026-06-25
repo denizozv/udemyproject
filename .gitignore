@@ -6,9 +6,11 @@ __pycache__/
 venv/
 env/
 
-# SQLite database
+# SQLite database (incl. WAL/shared-memory side files)
 db.sqlite
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.db
 
 # Environment / secrets

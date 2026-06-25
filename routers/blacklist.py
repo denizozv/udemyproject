@@ -26,7 +26,7 @@ from models.blacklist import BlacklistCreate, BlacklistResponse
 router = APIRouter(prefix="/blacklist", tags=["Blacklist"])
 
 
-def _ban_gecerli_mi(is_active: int, ban_until: str | None) -> bool:
+def _is_ban_valid(is_active: int, ban_until: str | None) -> bool:
     """
     Yasak ŞU AN geçerli mi? (acc5/acc6 için türetilmiş bilgi)
     Geçerli = aktif (is_active=1) VE (süresiz VEYA bitiş tarihi gelecekte).
@@ -36,14 +36,14 @@ def _ban_gecerli_mi(is_active: int, ban_until: str | None) -> bool:
     if ban_until is None:
         return True
     try:
-        bitis = datetime.strptime(ban_until, "%Y-%m-%d %H:%M:%S")
+        end_time = datetime.strptime(ban_until, "%Y-%m-%d %H:%M:%S")
     except ValueError:
         # Beklenmeyen biçim: güvenli tarafta kal, geçerli say.
         return True
-    return bitis > datetime.now()
+    return end_time > datetime.now()
 
 
-def _satiri_cevir(row: sqlite3.Row) -> BlacklistResponse:
+def _row_to_response(row: sqlite3.Row) -> BlacklistResponse:
     """Satırı BlacklistResponse'a çevirir; is_valid türetilir."""
     is_active = bool(row["is_active"])
     return BlacklistResponse(
@@ -53,16 +53,16 @@ def _satiri_cevir(row: sqlite3.Row) -> BlacklistResponse:
         reason=row["reason"],
         ban_until=row["ban_until"],
         is_active=is_active,
-        is_valid=_ban_gecerli_mi(row["is_active"], row["ban_until"]),
+        is_valid=_is_ban_valid(row["is_active"], row["ban_until"]),
         created_date=row["created_date"],
     )
 
 
-def _user_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
+def _user_exists(cursor: sqlite3.Cursor, user_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is not None
 
 
-def _gecerli_yasak_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
+def _has_active_ban(cursor: sqlite3.Cursor, user_id: int) -> bool:
     """Kullanıcının ŞU AN geçerli (aktif + süresi geçmemiş) bir yasağı var mı? (acc5)"""
     return (
         cursor.execute(
@@ -95,25 +95,25 @@ def _gecerli_yasak_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
         422: {"description": "Doğrulama hatası (örn. reason boş)."},
     },
 )
-def yasakla(payload: BlacklistCreate):
+def ban_user(payload: BlacklistCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
         # [R-user] yasaklanan ve yasağı uygulayan mevcut olmalı.
-        if not _user_var_mi(cursor, payload.user_id):
+        if not _user_exists(cursor, payload.user_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.user_id} id'li (yasaklanacak) kullanıcı bulunamadı.",
             )
-        if not _user_var_mi(cursor, payload.banned_by):
+        if not _user_exists(cursor, payload.banned_by):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.banned_by} id'li (yasağı uygulayan) kullanıcı bulunamadı.",
             )
 
         # [R-active] zaten geçerli yasak var mı?
-        if _gecerli_yasak_var_mi(cursor, payload.user_id):
+        if _has_active_ban(cursor, payload.user_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu kullanıcının zaten geçerli bir kara liste kaydı var.",
@@ -125,11 +125,11 @@ def yasakla(payload: BlacklistCreate):
         )
         conn.commit()
 
-        yeni_id = cursor.lastrowid
+        new_id = cursor.lastrowid
         row = cursor.execute(
-            "SELECT * FROM blacklist WHERE id = ?", (yeni_id,)
+            "SELECT * FROM blacklist WHERE id = ?", (new_id,)
         ).fetchone()
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -145,31 +145,31 @@ def yasakla(payload: BlacklistCreate):
         "- `only_valid=true` → yalnızca ŞU AN geçerli (aktif + süresi geçmemiş) yasaklar."
     ),
 )
-def yasaklari_listele(
+def list_bans(
     user_id: int | None = None, only_active: bool = False, only_valid: bool = False
 ):
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        kosullar = []
-        parametreler: list = []
+        conditions = []
+        params: list = []
         if user_id is not None:
-            kosullar.append("user_id = ?")
-            parametreler.append(user_id)
+            conditions.append("user_id = ?")
+            params.append(user_id)
         if only_active:
-            kosullar.append("is_active = 1")
+            conditions.append("is_active = 1")
         if only_valid:
-            kosullar.append(
+            conditions.append(
                 "is_active = 1 AND (ban_until IS NULL OR ban_until > datetime('now','localtime'))"
             )
 
         sql = "SELECT * FROM blacklist"
-        if kosullar:
-            sql += " WHERE " + " AND ".join(kosullar)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY id"
 
-        rows = cursor.execute(sql, parametreler).fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        rows = cursor.execute(sql, params).fetchall()
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -181,7 +181,7 @@ def yasaklari_listele(
     description="Verilen id'ye sahip kaydı döndürür.\n\n**İş kuralı:** [R3] Kayıt yoksa **404**.",
     responses={404: {"description": "Kara liste kaydı bulunamadı."}},
 )
-def yasak_getir(blacklist_id: int):
+def get_ban(blacklist_id: int):
     conn = get_connection()
     try:
         row = conn.execute(
@@ -192,7 +192,7 @@ def yasak_getir(blacklist_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{blacklist_id} id'li kara liste kaydı bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -208,7 +208,7 @@ def yasak_getir(blacklist_id: int):
     ),
     responses={404: {"description": "Kara liste kaydı bulunamadı."}},
 )
-def yasak_kaldir(blacklist_id: int):
+def lift_ban(blacklist_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -223,15 +223,15 @@ def yasak_kaldir(blacklist_id: int):
 
         # Zaten pasifse idempotent.
         if not row["is_active"]:
-            return _satiri_cevir(row)
+            return _row_to_response(row)
 
         cursor.execute(
             "UPDATE blacklist SET is_active = 0 WHERE id = ?", (blacklist_id,)
         )
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM blacklist WHERE id = ?", (blacklist_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()

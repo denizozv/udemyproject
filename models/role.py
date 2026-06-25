@@ -35,14 +35,14 @@ class RoleCreate(BaseModel):
     # Tip ve uzunluk kontrolünden SONRA çalışır (Pydantic v2 varsayılanı 'after').
     @field_validator("name")
     @classmethod
-    def isim_bos_olamaz(cls, deger: str) -> str:
+    def name_not_empty(cls, value: str) -> str:
         # .strip() -> baştaki/sondaki boşlukları siler.
-        temiz = deger.strip()
+        stripped = value.strip()
         # Sadece boşluktan oluşan ("   ") bir isim geçersizdir.
-        if not temiz:
+        if not stripped:
             raise ValueError("Rol adı boş olamaz.")
         # Temizlenmiş (kırpılmış) hali kaydedilir.
-        return temiz
+        return stripped
 
     # Swagger'da istek gövdesi (request body) için örnek gösterimi.
     model_config = ConfigDict(json_schema_extra={"example": {"name": "Instructor"}})
@@ -64,11 +64,11 @@ class RoleUpdate(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def isim_bos_olamaz(cls, deger: str) -> str:
-        temiz = deger.strip()
-        if not temiz:
+    def name_not_empty(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
             raise ValueError("Rol adı boş olamaz.")
-        return temiz
+        return stripped
 
     model_config = ConfigDict(json_schema_extra={"example": {"name": "Egitmen"}})
 

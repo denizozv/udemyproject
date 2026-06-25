@@ -16,7 +16,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from auth_deps import rol_gerektir
+from auth_deps import require_role
 from database import get_connection
 from models.payment_method import (
     PaymentMethodCreate,
@@ -27,7 +27,7 @@ from models.payment_method import (
 router = APIRouter(prefix="/payment-methods", tags=["Payment Methods"])
 
 
-def _satiri_cevir(row: sqlite3.Row) -> PaymentMethodResponse:
+def _row_to_response(row: sqlite3.Row) -> PaymentMethodResponse:
     """Veritabanı satırını PaymentMethodResponse'a çevirir; is_active 0/1 -> True/False."""
     return PaymentMethodResponse(
         id=row["id"],
@@ -40,7 +40,7 @@ def _satiri_cevir(row: sqlite3.Row) -> PaymentMethodResponse:
 
 @router.post(
     "",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=PaymentMethodResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Yeni ödeme yöntemi oluştur",
@@ -56,15 +56,15 @@ def _satiri_cevir(row: sqlite3.Row) -> PaymentMethodResponse:
         422: {"description": "Doğrulama hatası (örn. code/name boş)."},
     },
 )
-def yontem_olustur(payload: PaymentMethodCreate):
+def create_method(payload: PaymentMethodCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
-        mevcut = cursor.execute(
+        existing = cursor.execute(
             "SELECT id FROM payment_methods WHERE code = ?", (payload.code,)
         ).fetchone()
-        if mevcut is not None:
+        if existing is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"'{payload.code}' kodlu bir ödeme yöntemi zaten var.",
@@ -82,11 +82,11 @@ def yontem_olustur(payload: PaymentMethodCreate):
             )
         conn.commit()
 
-        yeni_id = cursor.lastrowid
+        new_id = cursor.lastrowid
         row = cursor.execute(
-            "SELECT * FROM payment_methods WHERE id = ?", (yeni_id,)
+            "SELECT * FROM payment_methods WHERE id = ?", (new_id,)
         ).fetchone()
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -100,7 +100,7 @@ def yontem_olustur(payload: PaymentMethodCreate):
         "aktif (is_active=1) kayıtlar döner."
     ),
 )
-def yontemleri_listele(only_active: bool = False):
+def list_methods(only_active: bool = False):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -112,7 +112,7 @@ def yontemleri_listele(only_active: bool = False):
             rows = cursor.execute(
                 "SELECT * FROM payment_methods ORDER BY id"
             ).fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -124,7 +124,7 @@ def yontemleri_listele(only_active: bool = False):
     description="Verilen id'ye sahip kaydı döndürür.\n\n**İş kuralı:** [R3] Kayıt yoksa **404**.",
     responses={404: {"description": "Belirtilen id'li ödeme yöntemi bulunamadı."}},
 )
-def yontem_getir(method_id: int):
+def get_method(method_id: int):
     conn = get_connection()
     try:
         row = conn.execute(
@@ -135,14 +135,14 @@ def yontem_getir(method_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{method_id} id'li ödeme yöntemi bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
 
 @router.put(
     "/{method_id}",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=PaymentMethodResponse,
     summary="Ödeme yöntemini güncelle",
     description=(
@@ -157,7 +157,7 @@ def yontem_getir(method_id: int):
         422: {"description": "Doğrulama hatası (örn. code/name boş)."},
     },
 )
-def yontem_guncelle(method_id: int, payload: PaymentMethodUpdate):
+def update_method(method_id: int, payload: PaymentMethodUpdate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -171,11 +171,11 @@ def yontem_guncelle(method_id: int, payload: PaymentMethodUpdate):
                 detail=f"{method_id} id'li ödeme yöntemi bulunamadı.",
             )
 
-        cakisma = cursor.execute(
+        conflict = cursor.execute(
             "SELECT id FROM payment_methods WHERE code = ? AND id <> ?",
             (payload.code, method_id),
         ).fetchone()
-        if cakisma is not None:
+        if conflict is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"'{payload.code}' kodu başka bir kayıtta kullanılıyor.",
@@ -187,17 +187,17 @@ def yontem_guncelle(method_id: int, payload: PaymentMethodUpdate):
         )
         conn.commit()
 
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM payment_methods WHERE id = ?", (method_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()
 
 
 @router.patch(
     "/{method_id}/deactivate",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=PaymentMethodResponse,
     summary="Ödeme yöntemini pasife al",
     description=(
@@ -209,7 +209,7 @@ def yontem_guncelle(method_id: int, payload: PaymentMethodUpdate):
     ),
     responses={404: {"description": "Kayıt bulunamadı."}},
 )
-def yontem_pasiflestir(method_id: int):
+def deactivate_method(method_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -225,23 +225,23 @@ def yontem_pasiflestir(method_id: int):
             "UPDATE payment_methods SET is_active = 0 WHERE id = ?", (method_id,)
         )
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM payment_methods WHERE id = ?", (method_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()
 
 
 @router.patch(
     "/{method_id}/activate",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=PaymentMethodResponse,
     summary="Ödeme yöntemini yeniden aktifleştir",
     description="Pasif bir kaydı tekrar aktif eder (is_active=1).\n\n**İş kuralı:** [R3] Kayıt yoksa **404**.",
     responses={404: {"description": "Kayıt bulunamadı."}},
 )
-def yontem_aktiflestir(method_id: int):
+def activate_method(method_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -257,9 +257,9 @@ def yontem_aktiflestir(method_id: int):
             "UPDATE payment_methods SET is_active = 1 WHERE id = ?", (method_id,)
         )
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM payment_methods WHERE id = ?", (method_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()

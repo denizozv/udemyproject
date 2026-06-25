@@ -17,14 +17,14 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from auth_deps import rol_gerektir
+from auth_deps import require_role
 from database import get_connection
 from models.course_instructor import CourseInstructorCreate, CourseInstructorResponse
 
 router = APIRouter(prefix="/course-instructors", tags=["Course Instructors"])
 
 
-def _satiri_cevir(row: sqlite3.Row) -> CourseInstructorResponse:
+def _row_to_response(row: sqlite3.Row) -> CourseInstructorResponse:
     """Satırı CourseInstructorResponse'a çevirir. is_active = (deleted_date IS NULL)."""
     return CourseInstructorResponse(
         id=row["id"],
@@ -37,15 +37,15 @@ def _satiri_cevir(row: sqlite3.Row) -> CourseInstructorResponse:
     )
 
 
-def _course_var_mi(cursor: sqlite3.Cursor, course_id: int) -> bool:
+def _course_exists(cursor: sqlite3.Cursor, course_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM courses WHERE id = ?", (course_id,)).fetchone() is not None
 
 
-def _user_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
+def _user_exists(cursor: sqlite3.Cursor, user_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is not None
 
 
-def _instructor_rolu_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
+def _has_instructor_role(cursor: sqlite3.Cursor, user_id: int) -> bool:
     """Kullanıcının AKTİF 'Instructor' rolü (USER_ROLES) var mı? (FR9 acc1)"""
     return (
         cursor.execute(
@@ -59,7 +59,7 @@ def _instructor_rolu_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
     )
 
 
-def _kurs_egitmeni_mi(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> bool:
+def _is_course_instructor(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> bool:
     """Kullanıcı bu kursun AKTİF eğitmeni mi? (FR9 acc6 — yalnızca kendi kursunu yönetebilir)"""
     return (
         cursor.execute(
@@ -71,7 +71,7 @@ def _kurs_egitmeni_mi(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> b
     )
 
 
-def _aktif_atama_var_mi(cursor: sqlite3.Cursor, course_id: int, instructor_id: int) -> bool:
+def _has_active_assignment(cursor: sqlite3.Cursor, course_id: int, instructor_id: int) -> bool:
     """Bu eğitmen bu kursa zaten AKTİF atanmış mı?"""
     return (
         cursor.execute(
@@ -83,16 +83,16 @@ def _aktif_atama_var_mi(cursor: sqlite3.Cursor, course_id: int, instructor_id: i
     )
 
 
-def _aktif_primary_var_mi(cursor: sqlite3.Cursor, course_id: int, haric_id: int | None = None) -> bool:
-    """Bu kursta zaten AKTİF bir primary eğitmen var mı? (haric_id kendini dışlamak için)"""
+def _has_active_primary(cursor: sqlite3.Cursor, course_id: int, exclude_id: int | None = None) -> bool:
+    """Bu kursta zaten AKTİF bir primary eğitmen var mı? (exclude_id kendini dışlamak için)"""
     sql = (
         "SELECT 1 FROM course_instructors "
         "WHERE course_id = ? AND is_primary = 1 AND deleted_date IS NULL"
     )
     params: list = [course_id]
-    if haric_id is not None:
+    if exclude_id is not None:
         sql += " AND id <> ?"
-        params.append(haric_id)
+        params.append(exclude_id)
     return cursor.execute(sql, params).fetchone() is not None
 
 
@@ -116,45 +116,45 @@ def _aktif_primary_var_mi(cursor: sqlite3.Cursor, course_id: int, haric_id: int 
         409: {"description": "Zaten atanmış veya kursta zaten bir primary var."},
     },
 )
-def egitmen_ata(
+def assign_instructor(
     payload: CourseInstructorCreate,
-    kullanici: dict = Depends(rol_gerektir("Instructor")),
+    user: dict = Depends(require_role("Instructor")),
 ):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
         # [R-course]
-        if not _course_var_mi(cursor, payload.course_id):
+        if not _course_exists(cursor, payload.course_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.course_id} id'li kurs bulunamadı.",
             )
         # FR9 acc6: yalnızca kursun mevcut bir eğitmeni yeni eğitmen ekleyebilir.
-        if not _kurs_egitmeni_mi(cursor, payload.course_id, kullanici["id"]):
+        if not _is_course_instructor(cursor, payload.course_id, user["id"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Bu kursa yalnızca mevcut eğitmenleri yeni eğitmen ekleyebilir.",
             )
         # [R-instructor] (var + aktif Instructor rolü)
-        if not _user_var_mi(cursor, payload.instructor_id):
+        if not _user_exists(cursor, payload.instructor_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.instructor_id} id'li kullanıcı bulunamadı.",
             )
-        if not _instructor_rolu_var_mi(cursor, payload.instructor_id):
+        if not _has_instructor_role(cursor, payload.instructor_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.instructor_id} id'li kullanıcının aktif 'Instructor' rolü yok.",
             )
         # [R-dup]
-        if _aktif_atama_var_mi(cursor, payload.course_id, payload.instructor_id):
+        if _has_active_assignment(cursor, payload.course_id, payload.instructor_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu eğitmen bu kursa zaten aktif olarak atanmış.",
             )
         # [R-primary]
-        if payload.is_primary and _aktif_primary_var_mi(cursor, payload.course_id):
+        if payload.is_primary and _has_active_primary(cursor, payload.course_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu kursun zaten aktif bir birincil (primary) eğitmeni var.",
@@ -166,11 +166,11 @@ def egitmen_ata(
         )
         conn.commit()
 
-        yeni_id = cursor.lastrowid
+        new_id = cursor.lastrowid
         row = cursor.execute(
-            "SELECT * FROM course_instructors WHERE id = ?", (yeni_id,)
+            "SELECT * FROM course_instructors WHERE id = ?", (new_id,)
         ).fetchone()
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -186,7 +186,7 @@ def egitmen_ata(
         "- `only_active=true` → yalnızca aktif (deleted_date IS NULL) atamalar."
     ),
 )
-def atamalari_listele(
+def list_assignments(
     course_id: int | None = None,
     instructor_id: int | None = None,
     only_active: bool = False,
@@ -194,24 +194,24 @@ def atamalari_listele(
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        kosullar = []
-        parametreler: list = []
+        conditions = []
+        params: list = []
         if course_id is not None:
-            kosullar.append("course_id = ?")
-            parametreler.append(course_id)
+            conditions.append("course_id = ?")
+            params.append(course_id)
         if instructor_id is not None:
-            kosullar.append("instructor_id = ?")
-            parametreler.append(instructor_id)
+            conditions.append("instructor_id = ?")
+            params.append(instructor_id)
         if only_active:
-            kosullar.append("deleted_date IS NULL")
+            conditions.append("deleted_date IS NULL")
 
         sql = "SELECT * FROM course_instructors"
-        if kosullar:
-            sql += " WHERE " + " AND ".join(kosullar)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY id"
 
-        rows = cursor.execute(sql, parametreler).fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        rows = cursor.execute(sql, params).fetchall()
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -223,7 +223,7 @@ def atamalari_listele(
     description="Verilen id'ye sahip atamayı döndürür.\n\n**İş kuralı:** [R3] Kayıt yoksa **404**.",
     responses={404: {"description": "Atama bulunamadı."}},
 )
-def atama_getir(ci_id: int):
+def get_assignment(ci_id: int):
     conn = get_connection()
     try:
         row = conn.execute(
@@ -234,7 +234,7 @@ def atama_getir(ci_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{ci_id} id'li kurs-eğitmen ataması bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -256,7 +256,7 @@ def atama_getir(ci_id: int):
         409: {"description": "Pasif atama veya kursta zaten başka bir primary var."},
     },
 )
-def primary_yap(ci_id: int, kullanici: dict = Depends(rol_gerektir("Instructor"))):
+def make_primary(ci_id: int, user: dict = Depends(require_role("Instructor"))):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -269,7 +269,7 @@ def primary_yap(ci_id: int, kullanici: dict = Depends(rol_gerektir("Instructor")
                 detail=f"{ci_id} id'li kurs-eğitmen ataması bulunamadı.",
             )
         # FR9 acc6: yalnızca kursun mevcut bir eğitmeni primary değişikliği yapabilir.
-        if not _kurs_egitmeni_mi(cursor, row["course_id"], kullanici["id"]):
+        if not _is_course_instructor(cursor, row["course_id"], user["id"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Bu işlemi yalnızca kursun mevcut eğitmenleri yapabilir.",
@@ -280,9 +280,9 @@ def primary_yap(ci_id: int, kullanici: dict = Depends(rol_gerektir("Instructor")
                 detail="Pasif (kaldırılmış) bir atama primary yapılamaz.",
             )
         if row["is_primary"]:
-            return _satiri_cevir(row)  # zaten primary, idempotent
+            return _row_to_response(row)  # zaten primary, idempotent
         # Kursta başka aktif primary var mı?
-        if _aktif_primary_var_mi(cursor, row["course_id"], haric_id=ci_id):
+        if _has_active_primary(cursor, row["course_id"], exclude_id=ci_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu kursun zaten aktif bir birincil (primary) eğitmeni var.",
@@ -291,10 +291,10 @@ def primary_yap(ci_id: int, kullanici: dict = Depends(rol_gerektir("Instructor")
             "UPDATE course_instructors SET is_primary = 1 WHERE id = ?", (ci_id,)
         )
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM course_instructors WHERE id = ?", (ci_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()
 
@@ -311,7 +311,7 @@ def primary_yap(ci_id: int, kullanici: dict = Depends(rol_gerektir("Instructor")
     ),
     responses={404: {"description": "Atama bulunamadı."}},
 )
-def egitmen_kaldir(ci_id: int, kullanici: dict = Depends(rol_gerektir("Instructor"))):
+def remove_instructor(ci_id: int, user: dict = Depends(require_role("Instructor"))):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -324,21 +324,21 @@ def egitmen_kaldir(ci_id: int, kullanici: dict = Depends(rol_gerektir("Instructo
                 detail=f"{ci_id} id'li kurs-eğitmen ataması bulunamadı.",
             )
         # FR9 acc6: yalnızca kursun mevcut bir eğitmeni eğitmen çıkarabilir.
-        if not _kurs_egitmeni_mi(cursor, row["course_id"], kullanici["id"]):
+        if not _is_course_instructor(cursor, row["course_id"], user["id"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Bu kurstan yalnızca mevcut eğitmenleri eğitmen çıkarabilir.",
             )
         if row["deleted_date"] is not None:
-            return _satiri_cevir(row)  # zaten kaldırılmış, idempotent
+            return _row_to_response(row)  # zaten kaldırılmış, idempotent
         cursor.execute(
             "UPDATE course_instructors SET deleted_date = datetime('now','localtime') WHERE id = ?",
             (ci_id,),
         )
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM course_instructors WHERE id = ?", (ci_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()

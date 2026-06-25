@@ -6,9 +6,9 @@ Kimlik doğrulama ve rol-bazlı yetkilendirme için FastAPI bağımlılıkları 
 Akış:
   - İstemci, login'den aldığı token'ı her istekte `Authorization: Bearer <token>`
     başlığıyla gönderir.
-  - `aktif_kullanici` bu token'ı çözer, kullanıcıyı + aktif rollerini bulur,
+  - `get_current_user` bu token'ı çözer, kullanıcıyı + aktif rollerini bulur,
     hesap aktifliğini ve kara liste yasağını kontrol eder.
-  - `rol_gerektir("Admin", ...)` belirli rolleri zorunlu kılan bir bağımlılık üretir.
+  - `require_role("Admin", ...)` belirli rolleri zorunlu kılan bir bağımlılık üretir.
 
 NOT: Token/JWT değil, sessions tablosunda saklanan opak token kullanılır
 (stateful → yasaklamada anında iptal edilebilir, FR12 acc9).
@@ -21,17 +21,17 @@ from fastapi import Depends, Header, HTTPException, status
 from database import get_connection
 
 
-def _token_coz(authorization: str | None) -> str | None:
+def _parse_token(authorization: str | None) -> str | None:
     """`Authorization: Bearer <token>` başlığından token'ı ayıklar."""
     if not authorization:
         return None
-    parcalar = authorization.split(" ", 1)
-    if len(parcalar) != 2 or parcalar[0].lower() != "bearer":
+    parts = authorization.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
         return None
-    return parcalar[1].strip() or None
+    return parts[1].strip() or None
 
 
-def aktif_kullanici(authorization: str | None = Header(default=None)) -> dict:
+def get_current_user(authorization: str | None = Header(default=None)) -> dict:
     """
     Geçerli token'a sahip aktif kullanıcıyı döndürür: {id, full_name, mail, roles}.
 
@@ -39,7 +39,7 @@ def aktif_kullanici(authorization: str | None = Header(default=None)) -> dict:
       - Token yok/geçersiz veya hesap pasif -> 401.
       - Kullanıcının geçerli kara liste yasağı varsa -> 403 (ve oturumları iptal edilir, FR12 acc9).
     """
-    token = _token_coz(authorization)
+    token = _parse_token(authorization)
     if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -72,7 +72,7 @@ def aktif_kullanici(authorization: str | None = Header(default=None)) -> dict:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Hesabınız kara listede."
             )
-        roller = [
+        roles = [
             r["name"]
             for r in cursor.execute(
                 "SELECT r.name FROM user_roles ur JOIN roles r ON ur.role_id = r.id "
@@ -80,23 +80,23 @@ def aktif_kullanici(authorization: str | None = Header(default=None)) -> dict:
                 (user["id"],),
             ).fetchall()
         ]
-        return {"id": user["id"], "full_name": user["full_name"], "mail": user["mail"], "roles": roller}
+        return {"id": user["id"], "full_name": user["full_name"], "mail": user["mail"], "roles": roles}
     finally:
         conn.close()
 
 
-def rol_gerektir(*gerekli_roller: str):
+def require_role(*required_roles: str):
     """
     Belirtilen rollerden EN AZ BİRİNE sahip olmayı zorunlu kılan bağımlılık üretir.
-    Örn: dependencies=[Depends(rol_gerektir("Admin"))]
+    Örn: dependencies=[Depends(require_role("Admin"))]
     """
 
-    def kontrol(kullanici: dict = Depends(aktif_kullanici)) -> dict:
-        if not set(gerekli_roller) & set(kullanici["roles"]):
+    def check(user: dict = Depends(get_current_user)) -> dict:
+        if not set(required_roles) & set(user["roles"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Bu işlem için gerekli rol(ler): {', '.join(gerekli_roller)}.",
+                detail=f"Bu işlem için gerekli rol(ler): {', '.join(required_roles)}.",
             )
-        return kullanici
+        return user
 
-    return kontrol
+    return check

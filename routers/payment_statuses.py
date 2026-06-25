@@ -16,7 +16,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from auth_deps import rol_gerektir
+from auth_deps import require_role
 from database import get_connection
 from models.payment_status import (
     PaymentStatusCreate,
@@ -27,7 +27,7 @@ from models.payment_status import (
 router = APIRouter(prefix="/payment-statuses", tags=["Payment Statuses"])
 
 
-def _satiri_cevir(row: sqlite3.Row) -> PaymentStatusResponse:
+def _row_to_response(row: sqlite3.Row) -> PaymentStatusResponse:
     """Veritabanı satırını PaymentStatusResponse'a çevirir; is_active 0/1 -> True/False."""
     return PaymentStatusResponse(
         id=row["id"],
@@ -40,7 +40,7 @@ def _satiri_cevir(row: sqlite3.Row) -> PaymentStatusResponse:
 
 @router.post(
     "",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=PaymentStatusResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Yeni ödeme durumu oluştur",
@@ -56,15 +56,15 @@ def _satiri_cevir(row: sqlite3.Row) -> PaymentStatusResponse:
         422: {"description": "Doğrulama hatası (örn. code/name boş)."},
     },
 )
-def durum_olustur(payload: PaymentStatusCreate):
+def create_status(payload: PaymentStatusCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
-        mevcut = cursor.execute(
+        existing = cursor.execute(
             "SELECT id FROM payment_statuses WHERE code = ?", (payload.code,)
         ).fetchone()
-        if mevcut is not None:
+        if existing is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"'{payload.code}' kodlu bir ödeme durumu zaten var.",
@@ -82,11 +82,11 @@ def durum_olustur(payload: PaymentStatusCreate):
             )
         conn.commit()
 
-        yeni_id = cursor.lastrowid
+        new_id = cursor.lastrowid
         row = cursor.execute(
-            "SELECT * FROM payment_statuses WHERE id = ?", (yeni_id,)
+            "SELECT * FROM payment_statuses WHERE id = ?", (new_id,)
         ).fetchone()
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -100,7 +100,7 @@ def durum_olustur(payload: PaymentStatusCreate):
         "aktif (is_active=1) kayıtlar döner."
     ),
 )
-def durumlari_listele(only_active: bool = False):
+def list_statuses(only_active: bool = False):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -112,7 +112,7 @@ def durumlari_listele(only_active: bool = False):
             rows = cursor.execute(
                 "SELECT * FROM payment_statuses ORDER BY id"
             ).fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -124,7 +124,7 @@ def durumlari_listele(only_active: bool = False):
     description="Verilen id'ye sahip kaydı döndürür.\n\n**İş kuralı:** [R3] Kayıt yoksa **404**.",
     responses={404: {"description": "Belirtilen id'li ödeme durumu bulunamadı."}},
 )
-def durum_getir(status_id: int):
+def get_status(status_id: int):
     conn = get_connection()
     try:
         row = conn.execute(
@@ -135,14 +135,14 @@ def durum_getir(status_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{status_id} id'li ödeme durumu bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
 
 @router.put(
     "/{status_id}",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=PaymentStatusResponse,
     summary="Ödeme durumunu güncelle",
     description=(
@@ -157,7 +157,7 @@ def durum_getir(status_id: int):
         422: {"description": "Doğrulama hatası (örn. code/name boş)."},
     },
 )
-def durum_guncelle(status_id: int, payload: PaymentStatusUpdate):
+def update_status(status_id: int, payload: PaymentStatusUpdate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -171,11 +171,11 @@ def durum_guncelle(status_id: int, payload: PaymentStatusUpdate):
                 detail=f"{status_id} id'li ödeme durumu bulunamadı.",
             )
 
-        cakisma = cursor.execute(
+        conflict = cursor.execute(
             "SELECT id FROM payment_statuses WHERE code = ? AND id <> ?",
             (payload.code, status_id),
         ).fetchone()
-        if cakisma is not None:
+        if conflict is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"'{payload.code}' kodu başka bir kayıtta kullanılıyor.",
@@ -187,17 +187,17 @@ def durum_guncelle(status_id: int, payload: PaymentStatusUpdate):
         )
         conn.commit()
 
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM payment_statuses WHERE id = ?", (status_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()
 
 
 @router.patch(
     "/{status_id}/deactivate",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=PaymentStatusResponse,
     summary="Ödeme durumunu pasife al",
     description=(
@@ -209,7 +209,7 @@ def durum_guncelle(status_id: int, payload: PaymentStatusUpdate):
     ),
     responses={404: {"description": "Kayıt bulunamadı."}},
 )
-def durum_pasiflestir(status_id: int):
+def deactivate_status(status_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -225,23 +225,23 @@ def durum_pasiflestir(status_id: int):
             "UPDATE payment_statuses SET is_active = 0 WHERE id = ?", (status_id,)
         )
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM payment_statuses WHERE id = ?", (status_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()
 
 
 @router.patch(
     "/{status_id}/activate",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=PaymentStatusResponse,
     summary="Ödeme durumunu yeniden aktifleştir",
     description="Pasif bir kaydı tekrar aktif eder (is_active=1).\n\n**İş kuralı:** [R3] Kayıt yoksa **404**.",
     responses={404: {"description": "Kayıt bulunamadı."}},
 )
-def durum_aktiflestir(status_id: int):
+def activate_status(status_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -257,9 +257,9 @@ def durum_aktiflestir(status_id: int):
             "UPDATE payment_statuses SET is_active = 1 WHERE id = ?", (status_id,)
         )
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM payment_statuses WHERE id = ?", (status_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()

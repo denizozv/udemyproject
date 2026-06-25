@@ -22,7 +22,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from auth_deps import rol_gerektir
+from auth_deps import require_role
 from database import get_connection
 from models.role import RoleCreate, RoleResponse, RoleUpdate
 
@@ -32,7 +32,7 @@ from models.role import RoleCreate, RoleResponse, RoleUpdate
 router = APIRouter(prefix="/roles", tags=["Roles"])
 
 
-def _satiri_role_cevir(row: sqlite3.Row) -> RoleResponse:
+def _row_to_response(row: sqlite3.Row) -> RoleResponse:
     """
     Veritabanından gelen bir satırı (sqlite3.Row) RoleResponse modeline dönüştürür.
     is_active veritabanında 0/1 (sayı) olarak tutulur; burada True/False'a çevrilir.
@@ -47,7 +47,7 @@ def _satiri_role_cevir(row: sqlite3.Row) -> RoleResponse:
 
 @router.post(
     "",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=RoleResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Yeni rol oluştur",
@@ -63,16 +63,16 @@ def _satiri_role_cevir(row: sqlite3.Row) -> RoleResponse:
         422: {"description": "Doğrulama hatası (örn. name boş)."},
     },
 )
-def rol_olustur(payload: RoleCreate):
+def create_role(payload: RoleCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
         # [R2] Benzersizlik ön kontrolü: aynı isimde rol var mı?
-        mevcut = cursor.execute(
+        existing = cursor.execute(
             "SELECT id FROM roles WHERE name = ?", (payload.name,)
         ).fetchone()
-        if mevcut is not None:
+        if existing is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"'{payload.name}' adında bir rol zaten var.",
@@ -90,9 +90,9 @@ def rol_olustur(payload: RoleCreate):
         conn.commit()
 
         # Yeni eklenen kaydın id'si ile tam kaydı geri oku ve döndür.
-        yeni_id = cursor.lastrowid
-        row = cursor.execute("SELECT * FROM roles WHERE id = ?", (yeni_id,)).fetchone()
-        return _satiri_role_cevir(row)
+        new_id = cursor.lastrowid
+        row = cursor.execute("SELECT * FROM roles WHERE id = ?", (new_id,)).fetchone()
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -106,7 +106,7 @@ def rol_olustur(payload: RoleCreate):
         "(is_active=1) roller döner."
     ),
 )
-def rolleri_listele(only_active: bool = False):
+def list_roles(only_active: bool = False):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -117,7 +117,7 @@ def rolleri_listele(only_active: bool = False):
         else:
             rows = cursor.execute("SELECT * FROM roles ORDER BY id").fetchall()
         # Her satırı RoleResponse'a çevirip liste olarak döndür.
-        return [_satiri_role_cevir(r) for r in rows]
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -129,7 +129,7 @@ def rolleri_listele(only_active: bool = False):
     description="Verilen id'ye sahip rolü döndürür.\n\n**İş kuralı:** [R3] Rol yoksa **404**.",
     responses={404: {"description": "Belirtilen id'li rol bulunamadı."}},
 )
-def rol_getir(role_id: int):
+def get_role(role_id: int):
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM roles WHERE id = ?", (role_id,)).fetchone()
@@ -138,14 +138,14 @@ def rol_getir(role_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{role_id} id'li rol bulunamadı.",
             )
-        return _satiri_role_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
 
 @router.put(
     "/{role_id}",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=RoleResponse,
     summary="Rolü güncelle",
     description=(
@@ -160,7 +160,7 @@ def rol_getir(role_id: int):
         422: {"description": "Doğrulama hatası (örn. name boş)."},
     },
 )
-def rol_guncelle(role_id: int, payload: RoleUpdate):
+def update_role(role_id: int, payload: RoleUpdate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -174,10 +174,10 @@ def rol_guncelle(role_id: int, payload: RoleUpdate):
             )
 
         # [R2] Yeni isim, KENDİSİ DIŞINDA bir rolde var mı? (id <> role_id)
-        cakisma = cursor.execute(
+        conflict = cursor.execute(
             "SELECT id FROM roles WHERE name = ? AND id <> ?", (payload.name, role_id)
         ).fetchone()
-        if cakisma is not None:
+        if conflict is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"'{payload.name}' adı başka bir rolde kullanılıyor.",
@@ -188,17 +188,17 @@ def rol_guncelle(role_id: int, payload: RoleUpdate):
         )
         conn.commit()
 
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM roles WHERE id = ?", (role_id,)
         ).fetchone()
-        return _satiri_role_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()
 
 
 @router.patch(
     "/{role_id}/deactivate",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=RoleResponse,
     summary="Rolü pasife al",
     description=(
@@ -210,7 +210,7 @@ def rol_guncelle(role_id: int, payload: RoleUpdate):
     ),
     responses={404: {"description": "Rol bulunamadı."}},
 )
-def rol_pasiflestir(role_id: int):
+def deactivate_role(role_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -222,23 +222,23 @@ def rol_pasiflestir(role_id: int):
             )
         cursor.execute("UPDATE roles SET is_active = 0 WHERE id = ?", (role_id,))
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM roles WHERE id = ?", (role_id,)
         ).fetchone()
-        return _satiri_role_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()
 
 
 @router.patch(
     "/{role_id}/activate",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=RoleResponse,
     summary="Rolü yeniden aktifleştir",
     description="Pasif bir rolü tekrar aktif eder (is_active=1).\n\n**İş kuralı:** [R3] Rol yoksa **404**.",
     responses={404: {"description": "Rol bulunamadı."}},
 )
-def rol_aktiflestir(role_id: int):
+def activate_role(role_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -250,9 +250,9 @@ def rol_aktiflestir(role_id: int):
             )
         cursor.execute("UPDATE roles SET is_active = 1 WHERE id = ?", (role_id,))
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM roles WHERE id = ?", (role_id,)
         ).fetchone()
-        return _satiri_role_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()

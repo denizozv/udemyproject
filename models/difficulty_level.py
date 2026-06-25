@@ -13,12 +13,12 @@ DIFFICULTY_LEVELS kolonları (Excel'e birebir): id, code, name, is_active, creat
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-def _bos_olamaz(deger: str, alan_adi: str) -> str:
+def _not_empty(value: str, field_name: str) -> str:
     """Ortak yardımcı: metni kırpar; sadece boşluksa hata fırlatır."""
-    temiz = deger.strip()
-    if not temiz:
-        raise ValueError(f"{alan_adi} boş olamaz.")
-    return temiz
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{field_name} boş olamaz.")
+    return stripped
 
 
 class DifficultyLevelCreate(BaseModel):
@@ -41,13 +41,13 @@ class DifficultyLevelCreate(BaseModel):
 
     @field_validator("code")
     @classmethod
-    def code_bos_olamaz(cls, v: str) -> str:
-        return _bos_olamaz(v, "code")
+    def code_not_empty(cls, v: str) -> str:
+        return _not_empty(v, "code")
 
     @field_validator("name")
     @classmethod
-    def name_bos_olamaz(cls, v: str) -> str:
-        return _bos_olamaz(v, "name")
+    def name_not_empty(cls, v: str) -> str:
+        return _not_empty(v, "name")
 
     model_config = ConfigDict(
         json_schema_extra={"example": {"code": "BEGINNER", "name": "Baslangic"}}
@@ -74,13 +74,13 @@ class DifficultyLevelUpdate(BaseModel):
 
     @field_validator("code")
     @classmethod
-    def code_bos_olamaz(cls, v: str) -> str:
-        return _bos_olamaz(v, "code")
+    def code_not_empty(cls, v: str) -> str:
+        return _not_empty(v, "code")
 
     @field_validator("name")
     @classmethod
-    def name_bos_olamaz(cls, v: str) -> str:
-        return _bos_olamaz(v, "name")
+    def name_not_empty(cls, v: str) -> str:
+        return _not_empty(v, "name")
 
     model_config = ConfigDict(
         json_schema_extra={"example": {"code": "INTERMEDIATE", "name": "Orta"}}

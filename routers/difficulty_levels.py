@@ -16,7 +16,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from auth_deps import rol_gerektir
+from auth_deps import require_role
 from database import get_connection
 from models.difficulty_level import (
     DifficultyLevelCreate,
@@ -27,7 +27,7 @@ from models.difficulty_level import (
 router = APIRouter(prefix="/difficulty-levels", tags=["Difficulty Levels"])
 
 
-def _satiri_cevir(row: sqlite3.Row) -> DifficultyLevelResponse:
+def _row_to_response(row: sqlite3.Row) -> DifficultyLevelResponse:
     """Veritabanı satırını DifficultyLevelResponse'a çevirir; is_active 0/1 -> True/False."""
     return DifficultyLevelResponse(
         id=row["id"],
@@ -40,7 +40,7 @@ def _satiri_cevir(row: sqlite3.Row) -> DifficultyLevelResponse:
 
 @router.post(
     "",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=DifficultyLevelResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Yeni zorluk seviyesi oluştur",
@@ -56,16 +56,16 @@ def _satiri_cevir(row: sqlite3.Row) -> DifficultyLevelResponse:
         422: {"description": "Doğrulama hatası (örn. code/name boş)."},
     },
 )
-def seviye_olustur(payload: DifficultyLevelCreate):
+def create_level(payload: DifficultyLevelCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
         # [R2] code benzersizlik ön kontrolü.
-        mevcut = cursor.execute(
+        existing = cursor.execute(
             "SELECT id FROM difficulty_levels WHERE code = ?", (payload.code,)
         ).fetchone()
-        if mevcut is not None:
+        if existing is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"'{payload.code}' kodlu bir zorluk seviyesi zaten var.",
@@ -84,11 +84,11 @@ def seviye_olustur(payload: DifficultyLevelCreate):
             )
         conn.commit()
 
-        yeni_id = cursor.lastrowid
+        new_id = cursor.lastrowid
         row = cursor.execute(
-            "SELECT * FROM difficulty_levels WHERE id = ?", (yeni_id,)
+            "SELECT * FROM difficulty_levels WHERE id = ?", (new_id,)
         ).fetchone()
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -102,7 +102,7 @@ def seviye_olustur(payload: DifficultyLevelCreate):
         "aktif (is_active=1) kayıtlar döner."
     ),
 )
-def seviyeleri_listele(only_active: bool = False):
+def list_levels(only_active: bool = False):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -114,7 +114,7 @@ def seviyeleri_listele(only_active: bool = False):
             rows = cursor.execute(
                 "SELECT * FROM difficulty_levels ORDER BY id"
             ).fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -126,7 +126,7 @@ def seviyeleri_listele(only_active: bool = False):
     description="Verilen id'ye sahip kaydı döndürür.\n\n**İş kuralı:** [R3] Kayıt yoksa **404**.",
     responses={404: {"description": "Belirtilen id'li zorluk seviyesi bulunamadı."}},
 )
-def seviye_getir(level_id: int):
+def get_level(level_id: int):
     conn = get_connection()
     try:
         row = conn.execute(
@@ -137,14 +137,14 @@ def seviye_getir(level_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{level_id} id'li zorluk seviyesi bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
 
 @router.put(
     "/{level_id}",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=DifficultyLevelResponse,
     summary="Zorluk seviyesini güncelle",
     description=(
@@ -159,7 +159,7 @@ def seviye_getir(level_id: int):
         422: {"description": "Doğrulama hatası (örn. code/name boş)."},
     },
 )
-def seviye_guncelle(level_id: int, payload: DifficultyLevelUpdate):
+def update_level(level_id: int, payload: DifficultyLevelUpdate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -175,11 +175,11 @@ def seviye_guncelle(level_id: int, payload: DifficultyLevelUpdate):
             )
 
         # [R2] Yeni code KENDİSİ DIŞINDA bir kayıtta var mı?
-        cakisma = cursor.execute(
+        conflict = cursor.execute(
             "SELECT id FROM difficulty_levels WHERE code = ? AND id <> ?",
             (payload.code, level_id),
         ).fetchone()
-        if cakisma is not None:
+        if conflict is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"'{payload.code}' kodu başka bir kayıtta kullanılıyor.",
@@ -191,17 +191,17 @@ def seviye_guncelle(level_id: int, payload: DifficultyLevelUpdate):
         )
         conn.commit()
 
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM difficulty_levels WHERE id = ?", (level_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()
 
 
 @router.patch(
     "/{level_id}/deactivate",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=DifficultyLevelResponse,
     summary="Zorluk seviyesini pasife al",
     description=(
@@ -217,7 +217,7 @@ def seviye_guncelle(level_id: int, payload: DifficultyLevelUpdate):
         409: {"description": "Seviye aktif bir kursta kullanılıyor; pasife alınamaz."},
     },
 )
-def seviye_pasiflestir(level_id: int):
+def deactivate_level(level_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -230,10 +230,10 @@ def seviye_pasiflestir(level_id: int):
                 detail=f"{level_id} id'li zorluk seviyesi bulunamadı.",
             )
         # [R4] Aktif bir kurs bu seviyeyi kullanıyorsa pasife alınamaz (FR10 acc6).
-        kullaniliyor = cursor.execute(
+        in_use = cursor.execute(
             "SELECT 1 FROM courses WHERE difficulty_id = ? AND is_active = 1", (level_id,)
         ).fetchone()
-        if kullaniliyor is not None:
+        if in_use is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu seviye aktif bir kursta kullanılıyor; pasife alınamaz.",
@@ -242,23 +242,23 @@ def seviye_pasiflestir(level_id: int):
             "UPDATE difficulty_levels SET is_active = 0 WHERE id = ?", (level_id,)
         )
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM difficulty_levels WHERE id = ?", (level_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()
 
 
 @router.patch(
     "/{level_id}/activate",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=DifficultyLevelResponse,
     summary="Zorluk seviyesini yeniden aktifleştir",
     description="Pasif bir kaydı tekrar aktif eder (is_active=1).\n\n**İş kuralı:** [R3] Kayıt yoksa **404**.",
     responses={404: {"description": "Kayıt bulunamadı."}},
 )
-def seviye_aktiflestir(level_id: int):
+def activate_level(level_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -274,9 +274,9 @@ def seviye_aktiflestir(level_id: int):
             "UPDATE difficulty_levels SET is_active = 1 WHERE id = ?", (level_id,)
         )
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM difficulty_levels WHERE id = ?", (level_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()

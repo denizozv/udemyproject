@@ -8,7 +8,7 @@ Uygulanan iş kuralları (BİZ FR7):
   - [R-tek] kullanıcının yalnızca bir sepeti olur   -> ikinci POST 409 (acc1)
   - [R3] olmayan id istenirse 404
 
-Ayrıca `sepet_getir_veya_olustur` yardımcı fonksiyonu CART_ITEMS adımında
+Ayrıca `get_or_create_cart` yardımcı fonksiyonu CART_ITEMS adımında
 "sepete ekle" sırasında LAZY (otomatik) sepet oluşturmak için kullanılacaktır.
 """
 
@@ -22,7 +22,7 @@ from models.cart import CartCreate, CartResponse
 router = APIRouter(prefix="/carts", tags=["Carts"])
 
 
-def _satiri_cevir(row: sqlite3.Row) -> CartResponse:
+def _row_to_response(row: sqlite3.Row) -> CartResponse:
     """Satırı CartResponse'a çevirir."""
     return CartResponse(
         id=row["id"],
@@ -31,11 +31,11 @@ def _satiri_cevir(row: sqlite3.Row) -> CartResponse:
     )
 
 
-def _user_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
+def _user_exists(cursor: sqlite3.Cursor, user_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is not None
 
 
-def sepet_getir_veya_olustur(cursor: sqlite3.Cursor, user_id: int) -> sqlite3.Row:
+def get_or_create_cart(cursor: sqlite3.Cursor, user_id: int) -> sqlite3.Row:
     """
     Kullanıcının sepetini döndürür; yoksa oluşturup döndürür (LAZY).
     NOT: commit ETMEZ — çağıran transaction'ı yönetir. Kullanıcının var olduğu
@@ -68,21 +68,21 @@ def sepet_getir_veya_olustur(cursor: sqlite3.Cursor, user_id: int) -> sqlite3.Ro
         409: {"description": "Kullanıcının zaten bir sepeti var."},
     },
 )
-def sepet_olustur(payload: CartCreate):
+def create_cart(payload: CartCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
-        if not _user_var_mi(cursor, payload.user_id):
+        if not _user_exists(cursor, payload.user_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.user_id} id'li kullanıcı bulunamadı.",
             )
 
-        mevcut = cursor.execute(
+        existing = cursor.execute(
             "SELECT id FROM carts WHERE user_id = ?", (payload.user_id,)
         ).fetchone()
-        if mevcut is not None:
+        if existing is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu kullanıcının zaten bir sepeti var.",
@@ -98,9 +98,9 @@ def sepet_olustur(payload: CartCreate):
             )
         conn.commit()
 
-        yeni_id = cursor.lastrowid
-        row = cursor.execute("SELECT * FROM carts WHERE id = ?", (yeni_id,)).fetchone()
-        return _satiri_cevir(row)
+        new_id = cursor.lastrowid
+        row = cursor.execute("SELECT * FROM carts WHERE id = ?", (new_id,)).fetchone()
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -111,7 +111,7 @@ def sepet_olustur(payload: CartCreate):
     summary="Sepetleri listele",
     description="Sepetleri listeler. `user_id` verilirse o kullanıcının sepeti(ler)i.",
 )
-def sepetleri_listele(user_id: int | None = None):
+def list_carts(user_id: int | None = None):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -121,7 +121,7 @@ def sepetleri_listele(user_id: int | None = None):
             ).fetchall()
         else:
             rows = cursor.execute("SELECT * FROM carts ORDER BY id").fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -133,7 +133,7 @@ def sepetleri_listele(user_id: int | None = None):
     description="Verilen id'ye sahip sepeti döndürür.\n\n**İş kuralı:** [R3] Sepet yoksa **404**.",
     responses={404: {"description": "Sepet bulunamadı."}},
 )
-def sepet_getir(cart_id: int):
+def get_cart(cart_id: int):
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM carts WHERE id = ?", (cart_id,)).fetchone()
@@ -142,6 +142,6 @@ def sepet_getir(cart_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{cart_id} id'li sepet bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()

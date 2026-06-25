@@ -25,7 +25,7 @@ from models.user_role import UserRoleCreate, UserRoleResponse
 router = APIRouter(prefix="/user-roles", tags=["User Roles"])
 
 
-def _satiri_cevir(row: sqlite3.Row) -> UserRoleResponse:
+def _row_to_response(row: sqlite3.Row) -> UserRoleResponse:
     """Satırı UserRoleResponse'a çevirir. is_active = (deleted_date IS NULL)."""
     return UserRoleResponse(
         id=row["id"],
@@ -37,12 +37,12 @@ def _satiri_cevir(row: sqlite3.Row) -> UserRoleResponse:
     )
 
 
-def _user_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
+def _user_exists(cursor: sqlite3.Cursor, user_id: int) -> bool:
     """Verilen id'li kullanıcı var mı?"""
     return cursor.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is not None
 
 
-def _rol_aktif_mi(cursor: sqlite3.Cursor, role_id: int) -> bool:
+def _is_role_active(cursor: sqlite3.Cursor, role_id: int) -> bool:
     """Verilen id'li rol var VE aktif (is_active=1) mi?"""
     return (
         cursor.execute(
@@ -52,7 +52,7 @@ def _rol_aktif_mi(cursor: sqlite3.Cursor, role_id: int) -> bool:
     )
 
 
-def _aktif_atama_var_mi(cursor: sqlite3.Cursor, user_id: int, role_id: int) -> bool:
+def _has_active_assignment(cursor: sqlite3.Cursor, user_id: int, role_id: int) -> bool:
     """Bu kullanıcıya bu rol zaten AKTİF (deleted_date IS NULL) atanmış mı?"""
     return (
         cursor.execute(
@@ -64,14 +64,14 @@ def _aktif_atama_var_mi(cursor: sqlite3.Cursor, user_id: int, role_id: int) -> b
     )
 
 
-def _aktif_rol_sayisi(cursor: sqlite3.Cursor, user_id: int) -> int:
+def _active_role_count(cursor: sqlite3.Cursor, user_id: int) -> int:
     """Kullanıcının kaç aktif rolü var? (son aktif rol kontrolü için)"""
     row = cursor.execute(
-        "SELECT COUNT(*) AS adet FROM user_roles "
+        "SELECT COUNT(*) AS cnt FROM user_roles "
         "WHERE user_id = ? AND deleted_date IS NULL",
         (user_id,),
     ).fetchone()
-    return row["adet"]
+    return row["cnt"]
 
 
 @router.post(
@@ -92,25 +92,25 @@ def _aktif_rol_sayisi(cursor: sqlite3.Cursor, user_id: int) -> int:
         409: {"description": "Bu rol bu kullanıcıya zaten aktif atanmış."},
     },
 )
-def rol_ata(payload: UserRoleCreate):
+def assign_role(payload: UserRoleCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
         # [R-user]
-        if not _user_var_mi(cursor, payload.user_id):
+        if not _user_exists(cursor, payload.user_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.user_id} id'li kullanıcı bulunamadı.",
             )
         # [R-role] (var + aktif)
-        if not _rol_aktif_mi(cursor, payload.role_id):
+        if not _is_role_active(cursor, payload.role_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.role_id} id'li aktif bir rol bulunamadı.",
             )
         # [R-dup]
-        if _aktif_atama_var_mi(cursor, payload.user_id, payload.role_id):
+        if _has_active_assignment(cursor, payload.user_id, payload.role_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu rol bu kullanıcıya zaten aktif olarak atanmış.",
@@ -122,11 +122,11 @@ def rol_ata(payload: UserRoleCreate):
         )
         conn.commit()
 
-        yeni_id = cursor.lastrowid
+        new_id = cursor.lastrowid
         row = cursor.execute(
-            "SELECT * FROM user_roles WHERE id = ?", (yeni_id,)
+            "SELECT * FROM user_roles WHERE id = ?", (new_id,)
         ).fetchone()
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -141,25 +141,25 @@ def rol_ata(payload: UserRoleCreate):
         "- `only_active=true` → yalnızca aktif (deleted_date IS NULL) atamalar."
     ),
 )
-def atamalari_listele(user_id: int | None = None, only_active: bool = False):
+def list_assignments(user_id: int | None = None, only_active: bool = False):
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        kosullar = []
-        parametreler: list = []
+        conditions = []
+        params: list = []
         if user_id is not None:
-            kosullar.append("user_id = ?")
-            parametreler.append(user_id)
+            conditions.append("user_id = ?")
+            params.append(user_id)
         if only_active:
-            kosullar.append("deleted_date IS NULL")
+            conditions.append("deleted_date IS NULL")
 
         sql = "SELECT * FROM user_roles"
-        if kosullar:
-            sql += " WHERE " + " AND ".join(kosullar)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY id"
 
-        rows = cursor.execute(sql, parametreler).fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        rows = cursor.execute(sql, params).fetchall()
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -171,7 +171,7 @@ def atamalari_listele(user_id: int | None = None, only_active: bool = False):
     description="Verilen id'ye sahip atamayı döndürür.\n\n**İş kuralı:** [R3] Kayıt yoksa **404**.",
     responses={404: {"description": "Atama bulunamadı."}},
 )
-def atama_getir(user_role_id: int):
+def get_assignment(user_role_id: int):
     conn = get_connection()
     try:
         row = conn.execute(
@@ -182,7 +182,7 @@ def atama_getir(user_role_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{user_role_id} id'li rol ataması bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -205,7 +205,7 @@ def atama_getir(user_role_id: int):
         409: {"description": "Kullanıcının son aktif rolü kaldırılamaz."},
     },
 )
-def rol_kaldir(user_role_id: int):
+def remove_role(user_role_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -220,10 +220,10 @@ def rol_kaldir(user_role_id: int):
 
         # Zaten kaldırılmışsa (idempotent): değiştirmeden döndür.
         if row["deleted_date"] is not None:
-            return _satiri_cevir(row)
+            return _row_to_response(row)
 
         # [R-last] Bu kullanıcının son aktif rolü mü?
-        if _aktif_rol_sayisi(cursor, row["user_id"]) <= 1:
+        if _active_role_count(cursor, row["user_id"]) <= 1:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Kullanıcının en az bir aktif rolü kalmalı; son aktif rol kaldırılamaz.",
@@ -235,9 +235,9 @@ def rol_kaldir(user_role_id: int):
         )
         conn.commit()
 
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM user_roles WHERE id = ?", (user_role_id,)
         ).fetchone()
-        return _satiri_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()

@@ -28,10 +28,10 @@ from models.payment import PaymentResponse
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
 # Checkout'ta oluşturulan ödemenin başlangıç durum kodu (FR8 acc7).
-CHECKOUT_PENDING_KODU = "PENDING"
+CHECKOUT_PENDING_CODE = "PENDING"
 
 
-def _satiri_cevir(row: sqlite3.Row) -> OrderResponse:
+def _row_to_response(row: sqlite3.Row) -> OrderResponse:
     return OrderResponse(
         id=row["id"],
         user_id=row["user_id"],
@@ -40,7 +40,7 @@ def _satiri_cevir(row: sqlite3.Row) -> OrderResponse:
     )
 
 
-def _user_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
+def _user_exists(cursor: sqlite3.Cursor, user_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is not None
 
 
@@ -63,11 +63,11 @@ def _user_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
         422: {"description": "Doğrulama hatası (total_price < 0)."},
     },
 )
-def siparis_olustur(payload: OrderCreate):
+def create_order(payload: OrderCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        if not _user_var_mi(cursor, payload.user_id):
+        if not _user_exists(cursor, payload.user_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.user_id} id'li kullanıcı bulunamadı.",
@@ -77,9 +77,9 @@ def siparis_olustur(payload: OrderCreate):
             (payload.user_id, payload.total_price),
         )
         conn.commit()
-        yeni_id = cursor.lastrowid
-        row = cursor.execute("SELECT * FROM orders WHERE id = ?", (yeni_id,)).fetchone()
-        return _satiri_cevir(row)
+        new_id = cursor.lastrowid
+        row = cursor.execute("SELECT * FROM orders WHERE id = ?", (new_id,)).fetchone()
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -90,7 +90,7 @@ def siparis_olustur(payload: OrderCreate):
     summary="Siparişleri listele",
     description="Siparişleri listeler. `user_id` verilirse o kullanıcının siparişleri.",
 )
-def siparisleri_listele(user_id: int | None = None):
+def list_orders(user_id: int | None = None):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -100,7 +100,7 @@ def siparisleri_listele(user_id: int | None = None):
             ).fetchall()
         else:
             rows = cursor.execute("SELECT * FROM orders ORDER BY id").fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -112,7 +112,7 @@ def siparisleri_listele(user_id: int | None = None):
     description="Verilen id'ye sahip siparişi döndürür.\n\n**İş kuralı:** [R3] Sipariş yoksa **404**.",
     responses={404: {"description": "Sipariş bulunamadı."}},
 )
-def siparis_getir(order_id: int):
+def get_order(order_id: int):
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
@@ -121,7 +121,7 @@ def siparis_getir(order_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{order_id} id'li sipariş bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -159,7 +159,7 @@ def checkout(payload: CheckoutRequest):
         cursor = conn.cursor()
 
         # [R-user]
-        if not _user_var_mi(cursor, payload.user_id):
+        if not _user_exists(cursor, payload.user_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.user_id} id'li kullanıcı bulunamadı.",
@@ -176,12 +176,12 @@ def checkout(payload: CheckoutRequest):
         # Aktif PENDING durumu (acc7)
         pending = cursor.execute(
             "SELECT id FROM payment_statuses WHERE lower(code) = lower(?) AND is_active = 1",
-            (CHECKOUT_PENDING_KODU,),
+            (CHECKOUT_PENDING_CODE,),
         ).fetchone()
         if pending is None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Aktif '{CHECKOUT_PENDING_KODU}' ödeme durumu tanımlı değil.",
+                detail=f"Aktif '{CHECKOUT_PENDING_CODE}' ödeme durumu tanımlı değil.",
             )
 
         # [R-empty] Kullanıcının sepeti ve kalemleri
@@ -194,20 +194,20 @@ def checkout(payload: CheckoutRequest):
                 detail="Sepet boş; ödeme adımına geçilemez.",
             )
         cart_id = cart["id"]
-        kalemler = cursor.execute(
+        items = cursor.execute(
             "SELECT ci.course_id, c.price "
             "FROM cart_items ci JOIN courses c ON ci.course_id = c.id "
             "WHERE ci.cart_id = ? ORDER BY ci.id",
             (cart_id,),
         ).fetchall()
-        if not kalemler:
+        if not items:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Sepet boş; ödeme adımına geçilemez.",
             )
 
         # 1) total = kalemlerin güncel fiyat toplamı (acc6)
-        total = round(sum(k["price"] for k in kalemler), 2)
+        total = round(sum(k["price"] for k in items), 2)
 
         # 2) ORDER
         cursor.execute(
@@ -217,7 +217,7 @@ def checkout(payload: CheckoutRequest):
         order_id = cursor.lastrowid
 
         # 3) ORDER_ITEM'lar (fiyat snapshot)
-        for k in kalemler:
+        for k in items:
             cursor.execute(
                 "INSERT INTO order_items (order_id, course_id, unit_price) VALUES (?, ?, ?)",
                 (order_id, k["course_id"], k["price"]),
@@ -245,7 +245,7 @@ def checkout(payload: CheckoutRequest):
         ).fetchone()
 
         return CheckoutResult(
-            order=_satiri_cevir(order_row),
+            order=_row_to_response(order_row),
             items=[
                 OrderItemResponse(
                     id=r["id"],

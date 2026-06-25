@@ -27,19 +27,19 @@ class CourseCreate(BaseModel):
 
     @field_validator("course_name")
     @classmethod
-    def ad_bos_olamaz(cls, v: str) -> str:
-        temiz = v.strip()
-        if not temiz:
+    def name_not_empty(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
             raise ValueError("Kurs adı boş olamaz.")
-        return temiz
+        return stripped
 
     @field_validator("description")
     @classmethod
-    def aciklama_temizle(cls, v: str | None) -> str | None:
+    def clean_description(cls, v: str | None) -> str | None:
         if v is None:
             return None
-        temiz = v.strip()
-        return temiz if temiz else None
+        stripped = v.strip()
+        return stripped if stripped else None
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -67,19 +67,19 @@ class CourseUpdate(BaseModel):
 
     @field_validator("course_name")
     @classmethod
-    def ad_bos_olamaz(cls, v: str) -> str:
-        temiz = v.strip()
-        if not temiz:
+    def name_not_empty(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
             raise ValueError("Kurs adı boş olamaz.")
-        return temiz
+        return stripped
 
     @field_validator("description")
     @classmethod
-    def aciklama_temizle(cls, v: str | None) -> str | None:
+    def clean_description(cls, v: str | None) -> str | None:
         if v is None:
             return None
-        temiz = v.strip()
-        return temiz if temiz else None
+        stripped = v.strip()
+        return stripped if stripped else None
 
     model_config = ConfigDict(
         json_schema_extra={

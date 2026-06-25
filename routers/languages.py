@@ -15,14 +15,14 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from auth_deps import rol_gerektir
+from auth_deps import require_role
 from database import get_connection
 from models.language import LanguageCreate, LanguageResponse, LanguageUpdate
 
 router = APIRouter(prefix="/languages", tags=["Languages"])
 
 
-def _satiri_language_cevir(row: sqlite3.Row) -> LanguageResponse:
+def _row_to_response(row: sqlite3.Row) -> LanguageResponse:
     """Veritabanı satırını LanguageResponse'a çevirir; is_active 0/1 -> True/False."""
     return LanguageResponse(
         id=row["id"],
@@ -34,7 +34,7 @@ def _satiri_language_cevir(row: sqlite3.Row) -> LanguageResponse:
 
 @router.post(
     "",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=LanguageResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Yeni dil oluştur",
@@ -50,16 +50,16 @@ def _satiri_language_cevir(row: sqlite3.Row) -> LanguageResponse:
         422: {"description": "Doğrulama hatası (örn. language_name boş)."},
     },
 )
-def dil_olustur(payload: LanguageCreate):
+def create_language(payload: LanguageCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
         # [R2] Benzersizlik ön kontrolü.
-        mevcut = cursor.execute(
+        existing = cursor.execute(
             "SELECT id FROM languages WHERE language_name = ?", (payload.language_name,)
         ).fetchone()
-        if mevcut is not None:
+        if existing is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"'{payload.language_name}' adında bir dil zaten var.",
@@ -78,11 +78,11 @@ def dil_olustur(payload: LanguageCreate):
             )
         conn.commit()
 
-        yeni_id = cursor.lastrowid
+        new_id = cursor.lastrowid
         row = cursor.execute(
-            "SELECT * FROM languages WHERE id = ?", (yeni_id,)
+            "SELECT * FROM languages WHERE id = ?", (new_id,)
         ).fetchone()
-        return _satiri_language_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -96,7 +96,7 @@ def dil_olustur(payload: LanguageCreate):
         "(is_active=1) diller döner."
     ),
 )
-def dilleri_listele(only_active: bool = False):
+def list_languages(only_active: bool = False):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -106,7 +106,7 @@ def dilleri_listele(only_active: bool = False):
             ).fetchall()
         else:
             rows = cursor.execute("SELECT * FROM languages ORDER BY id").fetchall()
-        return [_satiri_language_cevir(r) for r in rows]
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -118,7 +118,7 @@ def dilleri_listele(only_active: bool = False):
     description="Verilen id'ye sahip dili döndürür.\n\n**İş kuralı:** [R3] Dil yoksa **404**.",
     responses={404: {"description": "Belirtilen id'li dil bulunamadı."}},
 )
-def dil_getir(language_id: int):
+def get_language(language_id: int):
     conn = get_connection()
     try:
         row = conn.execute(
@@ -129,14 +129,14 @@ def dil_getir(language_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{language_id} id'li dil bulunamadı.",
             )
-        return _satiri_language_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
 
 @router.put(
     "/{language_id}",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=LanguageResponse,
     summary="Dili güncelle",
     description=(
@@ -151,7 +151,7 @@ def dil_getir(language_id: int):
         422: {"description": "Doğrulama hatası (örn. language_name boş)."},
     },
 )
-def dil_guncelle(language_id: int, payload: LanguageUpdate):
+def update_language(language_id: int, payload: LanguageUpdate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -167,11 +167,11 @@ def dil_guncelle(language_id: int, payload: LanguageUpdate):
             )
 
         # [R2] Yeni isim KENDİSİ DIŞINDA bir dilde var mı?
-        cakisma = cursor.execute(
+        conflict = cursor.execute(
             "SELECT id FROM languages WHERE language_name = ? AND id <> ?",
             (payload.language_name, language_id),
         ).fetchone()
-        if cakisma is not None:
+        if conflict is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"'{payload.language_name}' adı başka bir dilde kullanılıyor.",
@@ -183,17 +183,17 @@ def dil_guncelle(language_id: int, payload: LanguageUpdate):
         )
         conn.commit()
 
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM languages WHERE id = ?", (language_id,)
         ).fetchone()
-        return _satiri_language_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()
 
 
 @router.patch(
     "/{language_id}/deactivate",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=LanguageResponse,
     summary="Dili pasife al",
     description=(
@@ -208,7 +208,7 @@ def dil_guncelle(language_id: int, payload: LanguageUpdate):
         409: {"description": "Dil aktif bir kursta kullanılıyor; pasife alınamaz."},
     },
 )
-def dil_pasiflestir(language_id: int):
+def deactivate_language(language_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -221,10 +221,10 @@ def dil_pasiflestir(language_id: int):
                 detail=f"{language_id} id'li dil bulunamadı.",
             )
         # [R4] Aktif bir kurs bu dili kullanıyorsa pasife alınamaz (FR10 acc6).
-        kullaniliyor = cursor.execute(
+        in_use = cursor.execute(
             "SELECT 1 FROM courses WHERE language_id = ? AND is_active = 1", (language_id,)
         ).fetchone()
-        if kullaniliyor is not None:
+        if in_use is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu dil aktif bir kursta kullanılıyor; pasife alınamaz.",
@@ -233,23 +233,23 @@ def dil_pasiflestir(language_id: int):
             "UPDATE languages SET is_active = 0 WHERE id = ?", (language_id,)
         )
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM languages WHERE id = ?", (language_id,)
         ).fetchone()
-        return _satiri_language_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()
 
 
 @router.patch(
     "/{language_id}/activate",
-    dependencies=[Depends(rol_gerektir("Admin"))],
+    dependencies=[Depends(require_role("Admin"))],
     response_model=LanguageResponse,
     summary="Dili yeniden aktifleştir",
     description="Pasif bir dili tekrar aktif eder (is_active=1).\n\n**İş kuralı:** [R3] Dil yoksa **404**.",
     responses={404: {"description": "Dil bulunamadı."}},
 )
-def dil_aktiflestir(language_id: int):
+def activate_language(language_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -265,9 +265,9 @@ def dil_aktiflestir(language_id: int):
             "UPDATE languages SET is_active = 1 WHERE id = ?", (language_id,)
         )
         conn.commit()
-        guncel = cursor.execute(
+        updated = cursor.execute(
             "SELECT * FROM languages WHERE id = ?", (language_id,)
         ).fetchone()
-        return _satiri_language_cevir(guncel)
+        return _row_to_response(updated)
     finally:
         conn.close()

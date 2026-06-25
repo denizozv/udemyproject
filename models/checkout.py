@@ -23,11 +23,11 @@ class CheckoutRequest(BaseModel):
 
     @field_validator("address")
     @classmethod
-    def adres_bos_olamaz(cls, v: str) -> str:
-        temiz = v.strip()
-        if not temiz:
+    def address_not_empty(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
             raise ValueError("Adres boş olamaz.")
-        return temiz
+        return stripped
 
     model_config = ConfigDict(
         json_schema_extra={

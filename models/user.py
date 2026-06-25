@@ -21,21 +21,21 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Basit e-posta deseni (ek bağımlılık kullanmamak için regex ile).
 # "bir@şey.uzanti" kaba kontrolü; boşluk ve ikinci @ kabul etmez.
-_EMAIL_DESENI = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # Telefon: yalnızca rakam, 10–11 hane (Türkiye örnek verisine uygun).
-_TELEFON_DESENI = re.compile(r"^\d{10,11}$")
+_PHONE_PATTERN = re.compile(r"^\d{10,11}$")
 
 
-def _gecerli_dogum_tarihi(deger: str) -> str:
+def _validate_birth_date(value: str) -> str:
     """birth_date'i 'YYYY-MM-DD' olarak doğrular ve gelecekte olmadığını kontrol eder."""
     try:
-        ayrismis = datetime.strptime(deger.strip(), "%Y-%m-%d").date()
+        parsed = datetime.strptime(value.strip(), "%Y-%m-%d").date()
     except ValueError:
         raise ValueError("Doğum tarihi 'YYYY-MM-DD' formatında olmalıdır.")
-    if ayrismis > date.today():
+    if parsed > date.today():
         raise ValueError("Doğum tarihi gelecekteki bir tarih olamaz.")
-    return ayrismis.isoformat()
+    return parsed.isoformat()
 
 
 class UserCreate(BaseModel):
@@ -52,33 +52,33 @@ class UserCreate(BaseModel):
 
     @field_validator("full_name")
     @classmethod
-    def ad_bos_olamaz(cls, v: str) -> str:
-        temiz = v.strip()
-        if not temiz:
+    def name_not_empty(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
             raise ValueError("Ad soyad boş olamaz.")
-        return temiz
+        return stripped
 
     @field_validator("mail")
     @classmethod
-    def mail_gecerli(cls, v: str) -> str:
+    def mail_valid(cls, v: str) -> str:
         # Normalize: baştaki/sondaki boşluk silinir, küçük harfe çevrilir.
-        temiz = v.strip().lower()
-        if not _EMAIL_DESENI.match(temiz):
+        stripped = v.strip().lower()
+        if not _EMAIL_PATTERN.match(stripped):
             raise ValueError("Geçerli bir e-posta adresi giriniz.")
-        return temiz
+        return stripped
 
     @field_validator("phone")
     @classmethod
-    def telefon_gecerli(cls, v: str) -> str:
-        temiz = v.strip()
-        if not _TELEFON_DESENI.match(temiz):
+    def phone_valid(cls, v: str) -> str:
+        stripped = v.strip()
+        if not _PHONE_PATTERN.match(stripped):
             raise ValueError("Telefon yalnızca rakamlardan oluşmalı ve 10–11 hane olmalıdır.")
-        return temiz
+        return stripped
 
     @field_validator("birth_date")
     @classmethod
-    def dogum_tarihi_gecerli(cls, v: str) -> str:
-        return _gecerli_dogum_tarihi(v)
+    def birth_date_valid(cls, v: str) -> str:
+        return _validate_birth_date(v)
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -106,32 +106,32 @@ class UserUpdate(BaseModel):
 
     @field_validator("full_name")
     @classmethod
-    def ad_bos_olamaz(cls, v: str) -> str:
-        temiz = v.strip()
-        if not temiz:
+    def name_not_empty(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
             raise ValueError("Ad soyad boş olamaz.")
-        return temiz
+        return stripped
 
     @field_validator("mail")
     @classmethod
-    def mail_gecerli(cls, v: str) -> str:
-        temiz = v.strip().lower()
-        if not _EMAIL_DESENI.match(temiz):
+    def mail_valid(cls, v: str) -> str:
+        stripped = v.strip().lower()
+        if not _EMAIL_PATTERN.match(stripped):
             raise ValueError("Geçerli bir e-posta adresi giriniz.")
-        return temiz
+        return stripped
 
     @field_validator("phone")
     @classmethod
-    def telefon_gecerli(cls, v: str) -> str:
-        temiz = v.strip()
-        if not _TELEFON_DESENI.match(temiz):
+    def phone_valid(cls, v: str) -> str:
+        stripped = v.strip()
+        if not _PHONE_PATTERN.match(stripped):
             raise ValueError("Telefon yalnızca rakamlardan oluşmalı ve 10–11 hane olmalıdır.")
-        return temiz
+        return stripped
 
     @field_validator("birth_date")
     @classmethod
-    def dogum_tarihi_gecerli(cls, v: str) -> str:
-        return _gecerli_dogum_tarihi(v)
+    def birth_date_valid(cls, v: str) -> str:
+        return _validate_birth_date(v)
 
     model_config = ConfigDict(
         json_schema_extra={

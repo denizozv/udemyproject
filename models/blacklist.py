@@ -16,16 +16,16 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-def _ban_until_normalize(deger: str) -> str:
+def _ban_until_normalize(value: str) -> str:
     """
     ban_until metnini doğrular ve 'YYYY-MM-DD HH:MM:SS' biçimine normalize eder.
     Yalnızca tarih verilirse saat 00:00:00 kabul edilir.
     """
-    temiz = deger.strip()
-    for kalip in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+    stripped = value.strip()
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
-            ayrismis = datetime.strptime(temiz, kalip)
-            return ayrismis.strftime("%Y-%m-%d %H:%M:%S")
+            parsed = datetime.strptime(stripped, pattern)
+            return parsed.strftime("%Y-%m-%d %H:%M:%S")
         except ValueError:
             continue
     raise ValueError("ban_until 'YYYY-MM-DD' veya 'YYYY-MM-DD HH:MM:SS' formatında olmalıdır.")
@@ -51,15 +51,15 @@ class BlacklistCreate(BaseModel):
 
     @field_validator("reason")
     @classmethod
-    def reason_bos_olamaz(cls, v: str) -> str:
-        temiz = v.strip()
-        if not temiz:
+    def reason_not_empty(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
             raise ValueError("Gerekçe (reason) boş olamaz.")
-        return temiz
+        return stripped
 
     @field_validator("ban_until")
     @classmethod
-    def ban_until_gecerli(cls, v: str | None) -> str | None:
+    def ban_until_valid(cls, v: str | None) -> str | None:
         if v is None:
             return None
         return _ban_until_normalize(v)

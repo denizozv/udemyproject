@@ -28,13 +28,13 @@ from security import generate_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-SAKLAMA_GUN = 90  # FR3 saklama süresi (login'de reaktivasyon penceresi için)
+RETENTION_DAYS = 90  # FR3 saklama süresi (login'de reaktivasyon penceresi için)
 
 # Kimlik hatasında her durumda aynı (ifşa etmeyen) mesaj (acc2).
 MSG_LOGIN_INVALID = "E-posta veya şifre hatalı."
 
 
-def _gecerli_yasak_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
+def _has_active_ban(cursor: sqlite3.Cursor, user_id: int) -> bool:
     """Kullanıcının ŞU AN geçerli (aktif + süresi geçmemiş) yasağı var mı? (acc4/acc5)"""
     return (
         cursor.execute(
@@ -47,7 +47,7 @@ def _gecerli_yasak_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
     )
 
 
-def _aktif_roller(cursor: sqlite3.Cursor, user_id: int) -> list[str]:
+def _get_active_roles(cursor: sqlite3.Cursor, user_id: int) -> list[str]:
     """Kullanıcının aktif rol adları (acc10)."""
     rows = cursor.execute(
         "SELECT r.name FROM user_roles ur JOIN roles r ON ur.role_id = r.id "
@@ -93,7 +93,7 @@ def login(payload: LoginRequest):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=MSG_LOGIN_INVALID)
 
         # acc4/acc5: geçerli yasak varsa giriş yok.
-        if _gecerli_yasak_var_mi(cursor, user["id"]):
+        if _has_active_ban(cursor, user["id"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Hesabınız kara listede; giriş yapamazsınız.",
@@ -102,11 +102,11 @@ def login(payload: LoginRequest):
         # Silinmiş hesap mı?
         if not user["is_active"] and user["deleted_date"] is not None:
             # acc8: saklama süresi dolmuşsa hesap yokmuş gibi davran.
-            sure_doldu = cursor.execute(
+            retention_expired = cursor.execute(
                 "SELECT 1 FROM users WHERE id = ? AND deleted_date < datetime('now','localtime', ?)",
-                (user["id"], f"-{SAKLAMA_GUN} days"),
+                (user["id"], f"-{RETENTION_DAYS} days"),
             ).fetchone()
-            if sure_doldu is not None:
+            if retention_expired is not None:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=MSG_LOGIN_INVALID)
 
             # acc6: saklama süresi içinde -> onay yoksa onay iste.
@@ -127,7 +127,7 @@ def login(payload: LoginRequest):
             conn.commit()
 
         # acc9/acc10: başarılı giriş -> aktif roller + oturum (token) oluştur.
-        roller = _aktif_roller(cursor, user["id"])
+        roles = _get_active_roles(cursor, user["id"])
         token = generate_token()
         cursor.execute(
             "INSERT INTO sessions (token, user_id) VALUES (?, ?)", (token, user["id"])
@@ -139,7 +139,7 @@ def login(payload: LoginRequest):
             user_id=user["id"],
             full_name=user["full_name"],
             mail=user["mail"],
-            roles=roller,
+            roles=roles,
             token=token,
             message="Giriş başarılı.",
         )
@@ -160,9 +160,9 @@ def logout(authorization: str | None = Header(default=None)):
     # 'Authorization: Bearer <token>' -> token
     token = None
     if authorization:
-        parcalar = authorization.split(" ", 1)
-        if len(parcalar) == 2 and parcalar[0].lower() == "bearer":
-            token = parcalar[1].strip() or None
+        parts = authorization.split(" ", 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            token = parts[1].strip() or None
 
     conn = get_connection()
     try:

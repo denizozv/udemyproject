@@ -21,15 +21,15 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from auth_deps import aktif_kullanici
+from auth_deps import get_current_user
 from database import get_connection
 from models.review import ReviewCreate, ReviewResponse, ReviewUpdate
-from routers.order_items import kurs_satin_alindi_mi
+from routers.order_items import is_course_purchased
 
 router = APIRouter(prefix="/reviews", tags=["Reviews"])
 
 
-def _satiri_cevir(row: sqlite3.Row) -> ReviewResponse:
+def _row_to_response(row: sqlite3.Row) -> ReviewResponse:
     """Satırı ReviewResponse'a çevirir. is_active = (deleted_date IS NULL)."""
     return ReviewResponse(
         id=row["id"],
@@ -43,15 +43,15 @@ def _satiri_cevir(row: sqlite3.Row) -> ReviewResponse:
     )
 
 
-def _course_var_mi(cursor: sqlite3.Cursor, course_id: int) -> bool:
+def _course_exists(cursor: sqlite3.Cursor, course_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM courses WHERE id = ?", (course_id,)).fetchone() is not None
 
 
-def _user_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
+def _user_exists(cursor: sqlite3.Cursor, user_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is not None
 
 
-def _aktif_review_var_mi(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> bool:
+def _has_active_review(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> bool:
     """Bu kullanıcının bu kursa AKTİF bir değerlendirmesi var mı? (acc3)"""
     return (
         cursor.execute(
@@ -86,28 +86,28 @@ def _aktif_review_var_mi(cursor: sqlite3.Cursor, course_id: int, user_id: int) -
         422: {"description": "Doğrulama hatası (rating eksik/aralık dışı)."},
     },
 )
-def degerlendirme_yap(payload: ReviewCreate):
+def create_review(payload: ReviewCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
-        if not _course_var_mi(cursor, payload.course_id):
+        if not _course_exists(cursor, payload.course_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.course_id} id'li kurs bulunamadı.",
             )
-        if not _user_var_mi(cursor, payload.user_id):
+        if not _user_exists(cursor, payload.user_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.user_id} id'li kullanıcı bulunamadı.",
             )
         # [R-owned] (acc2) Yalnızca kursu satın almış (ödeme COMPLETED) kullanıcı.
-        if not kurs_satin_alindi_mi(cursor, payload.user_id, payload.course_id):
+        if not is_course_purchased(cursor, payload.user_id, payload.course_id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Bu kursu değerlendirebilmek için satın almış olmalısınız.",
             )
-        if _aktif_review_var_mi(cursor, payload.course_id, payload.user_id):
+        if _has_active_review(cursor, payload.course_id, payload.user_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu kullanıcının bu kursa zaten aktif bir değerlendirmesi var.",
@@ -119,9 +119,9 @@ def degerlendirme_yap(payload: ReviewCreate):
         )
         conn.commit()
 
-        yeni_id = cursor.lastrowid
-        row = cursor.execute("SELECT * FROM reviews WHERE id = ?", (yeni_id,)).fetchone()
-        return _satiri_cevir(row)
+        new_id = cursor.lastrowid
+        row = cursor.execute("SELECT * FROM reviews WHERE id = ?", (new_id,)).fetchone()
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -137,7 +137,7 @@ def degerlendirme_yap(payload: ReviewCreate):
         "- `only_active=true` → yalnızca aktif (deleted_date IS NULL)."
     ),
 )
-def degerlendirmeleri_listele(
+def list_reviews(
     course_id: int | None = None,
     user_id: int | None = None,
     only_active: bool = False,
@@ -145,24 +145,24 @@ def degerlendirmeleri_listele(
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        kosullar = []
-        parametreler: list = []
+        conditions = []
+        params: list = []
         if course_id is not None:
-            kosullar.append("course_id = ?")
-            parametreler.append(course_id)
+            conditions.append("course_id = ?")
+            params.append(course_id)
         if user_id is not None:
-            kosullar.append("user_id = ?")
-            parametreler.append(user_id)
+            conditions.append("user_id = ?")
+            params.append(user_id)
         if only_active:
-            kosullar.append("deleted_date IS NULL")
+            conditions.append("deleted_date IS NULL")
 
         sql = "SELECT * FROM reviews"
-        if kosullar:
-            sql += " WHERE " + " AND ".join(kosullar)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY id"
 
-        rows = cursor.execute(sql, parametreler).fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        rows = cursor.execute(sql, params).fetchall()
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -174,7 +174,7 @@ def degerlendirmeleri_listele(
     description="Verilen id'ye sahip değerlendirmeyi döndürür.\n\n**İş kuralı:** [R3] Kayıt yoksa **404**.",
     responses={404: {"description": "Değerlendirme bulunamadı."}},
 )
-def degerlendirme_getir(review_id: int):
+def get_review(review_id: int):
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM reviews WHERE id = ?", (review_id,)).fetchone()
@@ -183,7 +183,7 @@ def degerlendirme_getir(review_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{review_id} id'li değerlendirme bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -202,10 +202,10 @@ def degerlendirme_getir(review_id: int):
         422: {"description": "Doğrulama hatası (rating aralık dışı)."},
     },
 )
-def degerlendirme_guncelle(
+def update_review(
     review_id: int,
     payload: ReviewUpdate,
-    kullanici: dict = Depends(aktif_kullanici),
+    user: dict = Depends(get_current_user),
 ):
     conn = get_connection()
     try:
@@ -217,7 +217,7 @@ def degerlendirme_guncelle(
                 detail=f"{review_id} id'li değerlendirme bulunamadı.",
             )
         # FR6 acc7: kullanıcı yalnızca KENDİ değerlendirmesini düzenleyebilir.
-        if row["user_id"] != kullanici["id"]:
+        if row["user_id"] != user["id"]:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Yalnızca kendi değerlendirmenizi düzenleyebilirsiniz.",
@@ -227,8 +227,8 @@ def degerlendirme_guncelle(
             (payload.rating, payload.comment, review_id),
         )
         conn.commit()
-        guncel = cursor.execute("SELECT * FROM reviews WHERE id = ?", (review_id,)).fetchone()
-        return _satiri_cevir(guncel)
+        updated = cursor.execute("SELECT * FROM reviews WHERE id = ?", (review_id,)).fetchone()
+        return _row_to_response(updated)
     finally:
         conn.close()
 
@@ -245,7 +245,7 @@ def degerlendirme_guncelle(
     ),
     responses={404: {"description": "Değerlendirme bulunamadı."}},
 )
-def degerlendirme_kaldir(review_id: int, kullanici: dict = Depends(aktif_kullanici)):
+def delete_review(review_id: int, user: dict = Depends(get_current_user)):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -256,19 +256,19 @@ def degerlendirme_kaldir(review_id: int, kullanici: dict = Depends(aktif_kullani
                 detail=f"{review_id} id'li değerlendirme bulunamadı.",
             )
         # FR6 acc7: değerlendirmeyi sahibi VEYA bir Admin (uygunsuz içerik) kaldırabilir.
-        if row["user_id"] != kullanici["id"] and "Admin" not in kullanici["roles"]:
+        if row["user_id"] != user["id"] and "Admin" not in user["roles"]:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Bu değerlendirmeyi yalnızca sahibi veya bir Admin kaldırabilir.",
             )
         if row["deleted_date"] is not None:
-            return _satiri_cevir(row)  # zaten kaldırılmış, idempotent
+            return _row_to_response(row)  # zaten kaldırılmış, idempotent
         cursor.execute(
             "UPDATE reviews SET deleted_date = datetime('now','localtime') WHERE id = ?",
             (review_id,),
         )
         conn.commit()
-        guncel = cursor.execute("SELECT * FROM reviews WHERE id = ?", (review_id,)).fetchone()
-        return _satiri_cevir(guncel)
+        updated = cursor.execute("SELECT * FROM reviews WHERE id = ?", (review_id,)).fetchone()
+        return _row_to_response(updated)
     finally:
         conn.close()

@@ -26,12 +26,12 @@ class LanguageCreate(BaseModel):
 
     @field_validator("language_name")
     @classmethod
-    def isim_bos_olamaz(cls, deger: str) -> str:
+    def name_not_empty(cls, value: str) -> str:
         # Baştaki/sondaki boşlukları kırp; sadece boşluksa reddet.
-        temiz = deger.strip()
-        if not temiz:
+        stripped = value.strip()
+        if not stripped:
             raise ValueError("Dil adı boş olamaz.")
-        return temiz
+        return stripped
 
     model_config = ConfigDict(json_schema_extra={"example": {"language_name": "Turkce"}})
 
@@ -49,11 +49,11 @@ class LanguageUpdate(BaseModel):
 
     @field_validator("language_name")
     @classmethod
-    def isim_bos_olamaz(cls, deger: str) -> str:
-        temiz = deger.strip()
-        if not temiz:
+    def name_not_empty(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
             raise ValueError("Dil adı boş olamaz.")
-        return temiz
+        return stripped
 
     model_config = ConfigDict(json_schema_extra={"example": {"language_name": "Almanca"}})
 

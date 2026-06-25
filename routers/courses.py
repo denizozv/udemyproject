@@ -19,7 +19,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from auth_deps import rol_gerektir
+from auth_deps import require_role
 from database import get_connection
 from models.catalog import (
     CourseCard,
@@ -29,25 +29,25 @@ from models.catalog import (
     ReviewBrief,
 )
 from models.course import CourseCreate, CourseResponse, CourseUpdate
-from routers.order_items import kurs_satin_alindi_mi
+from routers.order_items import is_course_purchased
 
 router = APIRouter(prefix="/courses", tags=["Courses"])
 
 # FR4 acc8: sayfa başına kurs sayısı.
-SAYFA_BOYUTU = 12
+PAGE_SIZE = 12
 
 # FR4 acc6/acc7: geçerli sıralama seçenekleri (varsayılan popülerlik).
-GECERLI_SIRALAMALAR = {"popularity", "price", "rating", "newest"}
+VALID_SORT_OPTIONS = {"popularity", "price", "rating", "newest"}
 
 # Hangi alanın hangi lookup tablosuna baktığı (mevcut+aktif kontrolü için).
-_LOOKUP_TABLOLARI = {
+_LOOKUP_TABLES = {
     "category_id": ("categories", "kategori"),
     "language_id": ("languages", "dil"),
     "difficulty_id": ("difficulty_levels", "zorluk seviyesi"),
 }
 
 
-def _satiri_cevir(row: sqlite3.Row) -> CourseResponse:
+def _row_to_response(row: sqlite3.Row) -> CourseResponse:
     """Veritabanı satırını CourseResponse'a çevirir."""
     return CourseResponse(
         id=row["id"],
@@ -63,17 +63,17 @@ def _satiri_cevir(row: sqlite3.Row) -> CourseResponse:
     )
 
 
-def _aktif_mi(cursor: sqlite3.Cursor, tablo: str, kayit_id: int) -> bool:
+def _is_active(cursor: sqlite3.Cursor, table: str, record_id: int) -> bool:
     """Verilen lookup tablosunda kayıt var VE aktif (is_active=1) mi?"""
     return (
         cursor.execute(
-            f"SELECT 1 FROM {tablo} WHERE id = ? AND is_active = 1", (kayit_id,)
+            f"SELECT 1 FROM {table} WHERE id = ? AND is_active = 1", (record_id,)
         ).fetchone()
         is not None
     )
 
 
-def _aktif_egitmen_mi(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> bool:
+def _is_active_instructor(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> bool:
     """Kullanıcı bu kursun AKTİF (herhangi) eğitmeni mi? (FR9 acc6 içerik/fiyat düzenleme)"""
     return (
         cursor.execute(
@@ -85,7 +85,7 @@ def _aktif_egitmen_mi(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> b
     )
 
 
-def _primary_egitmen_mi(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> bool:
+def _is_primary_instructor(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> bool:
     """Kullanıcı bu kursun AKTİF PRIMARY eğitmeni mi? (FR9 acc6 pasife alma)"""
     return (
         cursor.execute(
@@ -97,22 +97,22 @@ def _primary_egitmen_mi(cursor: sqlite3.Cursor, course_id: int, user_id: int) ->
     )
 
 
-def _fk_kontrol(cursor: sqlite3.Cursor, category_id: int, language_id: int, difficulty_id: int) -> None:
+def _check_fk(cursor: sqlite3.Cursor, category_id: int, language_id: int, difficulty_id: int) -> None:
     """
     [R-fk] category_id/language_id/difficulty_id'nin mevcut VE aktif olduğunu
     doğrular; biri geçersizse 400 fırlatır. (FR9 acc4/acc5)
     """
-    degerler = {
+    values = {
         "category_id": category_id,
         "language_id": language_id,
         "difficulty_id": difficulty_id,
     }
-    for alan, deger in degerler.items():
-        tablo, etiket = _LOOKUP_TABLOLARI[alan]
-        if not _aktif_mi(cursor, tablo, deger):
+    for field, value in values.items():
+        table, label = _LOOKUP_TABLES[field]
+        if not _is_active(cursor, table, value):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"{deger} id'li aktif bir {etiket} bulunamadı.",
+                detail=f"{value} id'li aktif bir {label} bulunamadı.",
             )
 
 
@@ -136,12 +136,12 @@ def _fk_kontrol(cursor: sqlite3.Cursor, category_id: int, language_id: int, diff
         422: {"description": "Doğrulama hatası (örn. price<=0, course_name boş)."},
     },
 )
-def kurs_olustur(payload: CourseCreate, kullanici: dict = Depends(rol_gerektir("Instructor"))):
+def create_course(payload: CourseCreate, user: dict = Depends(require_role("Instructor"))):
     # FR9 acc1: yalnızca Instructor rolündeki kullanıcı kurs ekleyebilir (Depends ile).
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        _fk_kontrol(cursor, payload.category_id, payload.language_id, payload.difficulty_id)
+        _check_fk(cursor, payload.category_id, payload.language_id, payload.difficulty_id)
 
         cursor.execute(
             "INSERT INTO courses (category_id, language_id, course_name, price, description, difficulty_id) "
@@ -155,18 +155,18 @@ def kurs_olustur(payload: CourseCreate, kullanici: dict = Depends(rol_gerektir("
                 payload.difficulty_id,
             ),
         )
-        yeni_id = cursor.lastrowid
+        new_id = cursor.lastrowid
 
         # Kursu oluşturan eğitmen otomatik PRIMARY eğitmen olarak atanır.
         # (Sahiplik kurallarının — FR9 acc6 — tutarlı çalışması için.)
         cursor.execute(
             "INSERT INTO course_instructors (course_id, instructor_id, is_primary) VALUES (?, ?, 1)",
-            (yeni_id, kullanici["id"]),
+            (new_id, user["id"]),
         )
         conn.commit()
 
-        row = cursor.execute("SELECT * FROM courses WHERE id = ?", (yeni_id,)).fetchone()
-        return _satiri_cevir(row)
+        row = cursor.execute("SELECT * FROM courses WHERE id = ?", (new_id,)).fetchone()
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -184,7 +184,7 @@ def kurs_olustur(payload: CourseCreate, kullanici: dict = Depends(rol_gerektir("
     ),
     responses={400: {"description": "Fiyat aralığı geçersiz (min_price > max_price)."}},
 )
-def kurslari_listele(
+def list_courses(
     q: str | None = None,
     category_id: int | None = None,
     language_id: int | None = None,
@@ -203,36 +203,36 @@ def kurslari_listele(
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        kosullar = []
-        parametreler: list = []
+        conditions = []
+        params: list = []
         if q:
-            kosullar.append("course_name LIKE ?")
-            parametreler.append(f"%{q}%")
+            conditions.append("course_name LIKE ?")
+            params.append(f"%{q}%")
         if category_id is not None:
-            kosullar.append("category_id = ?")
-            parametreler.append(category_id)
+            conditions.append("category_id = ?")
+            params.append(category_id)
         if language_id is not None:
-            kosullar.append("language_id = ?")
-            parametreler.append(language_id)
+            conditions.append("language_id = ?")
+            params.append(language_id)
         if difficulty_id is not None:
-            kosullar.append("difficulty_id = ?")
-            parametreler.append(difficulty_id)
+            conditions.append("difficulty_id = ?")
+            params.append(difficulty_id)
         if min_price is not None:
-            kosullar.append("price >= ?")
-            parametreler.append(min_price)
+            conditions.append("price >= ?")
+            params.append(min_price)
         if max_price is not None:
-            kosullar.append("price <= ?")
-            parametreler.append(max_price)
+            conditions.append("price <= ?")
+            params.append(max_price)
         if only_active:
-            kosullar.append("is_active = 1")
+            conditions.append("is_active = 1")
 
         sql = "SELECT * FROM courses"
-        if kosullar:
-            sql += " WHERE " + " AND ".join(kosullar)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY id"
 
-        rows = cursor.execute(sql, parametreler).fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        rows = cursor.execute(sql, params).fetchall()
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -253,7 +253,7 @@ def kurslari_listele(
     ),
     responses={400: {"description": "Geçersiz fiyat aralığı veya sıralama değeri."}},
 )
-def kurs_katalogu(
+def course_catalog(
     q: str | None = None,
     category_id: int | None = None,
     language_id: int | None = None,
@@ -268,10 +268,10 @@ def kurs_katalogu(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Fiyat aralığında alt sınır üst sınırdan büyük olamaz.",
         )
-    if sort not in GECERLI_SIRALAMALAR:
+    if sort not in VALID_SORT_OPTIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Geçersiz sıralama. Seçenekler: {', '.join(sorted(GECERLI_SIRALAMALAR))}.",
+            detail=f"Geçersiz sıralama. Seçenekler: {', '.join(sorted(VALID_SORT_OPTIONS))}.",
         )
     if page < 1:
         page = 1
@@ -279,30 +279,30 @@ def kurs_katalogu(
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        kosullar = ["c.is_active = 1"]  # acc5: yalnızca aktif kurslar
-        parametreler: list = []
+        conditions = ["c.is_active = 1"]  # acc5: yalnızca aktif kurslar
+        params: list = []
         if q:
-            kosullar.append(
+            conditions.append(
                 "(c.course_name LIKE ? OR EXISTS ("
                 " SELECT 1 FROM course_instructors ci2 JOIN users u2 ON ci2.instructor_id = u2.id"
                 " WHERE ci2.course_id = c.id AND ci2.deleted_date IS NULL AND u2.full_name LIKE ?))"
             )
-            parametreler += [f"%{q}%", f"%{q}%"]
+            params += [f"%{q}%", f"%{q}%"]
         if category_id is not None:
-            kosullar.append("c.category_id = ?")
-            parametreler.append(category_id)
+            conditions.append("c.category_id = ?")
+            params.append(category_id)
         if language_id is not None:
-            kosullar.append("c.language_id = ?")
-            parametreler.append(language_id)
+            conditions.append("c.language_id = ?")
+            params.append(language_id)
         if difficulty_id is not None:
-            kosullar.append("c.difficulty_id = ?")
-            parametreler.append(difficulty_id)
+            conditions.append("c.difficulty_id = ?")
+            params.append(difficulty_id)
         if min_price is not None:
-            kosullar.append("c.price >= ?")
-            parametreler.append(min_price)
+            conditions.append("c.price >= ?")
+            params.append(min_price)
         if max_price is not None:
-            kosullar.append("c.price <= ?")
-            parametreler.append(max_price)
+            conditions.append("c.price <= ?")
+            params.append(max_price)
 
         sql = (
             "SELECT c.*, "
@@ -314,9 +314,9 @@ def kurs_katalogu(
             " JOIN payments p ON p.order_id=o.id JOIN payment_statuses ps ON p.payment_status_id=ps.id "
             " WHERE oi.course_id=c.id AND lower(ps.code)='completed' "
             "   AND o.created_date >= datetime('now','localtime','-30 days')) AS popularity "
-            "FROM courses c WHERE " + " AND ".join(kosullar)
+            "FROM courses c WHERE " + " AND ".join(conditions)
         )
-        rows = cursor.execute(sql, parametreler).fetchall()
+        rows = cursor.execute(sql, params).fetchall()
 
         # Sıralama (Python; stable sort ile ikincil ölçütler).
         if sort == "price":
@@ -331,9 +331,9 @@ def kurs_katalogu(
             rows.sort(key=lambda r: r["popularity"], reverse=True)
 
         total = len(rows)
-        total_pages = (total + SAYFA_BOYUTU - 1) // SAYFA_BOYUTU
-        bas = (page - 1) * SAYFA_BOYUTU
-        sayfa_satirlari = rows[bas : bas + SAYFA_BOYUTU]
+        total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+        start = (page - 1) * PAGE_SIZE
+        page_rows = rows[start : start + PAGE_SIZE]
 
         items = [
             CourseCard(
@@ -347,12 +347,12 @@ def kurs_katalogu(
                 average_rating=r["avg_rating"],
                 review_count=r["review_count"],
             )
-            for r in sayfa_satirlari
+            for r in page_rows
         ]
         return CourseCatalogPage(
             items=items,
             page=page,
-            page_size=SAYFA_BOYUTU,
+            page_size=PAGE_SIZE,
             total=total,
             total_pages=total_pages,
             sort=sort,
@@ -368,7 +368,7 @@ def kurs_katalogu(
     description="Verilen id'ye sahip kursu döndürür.\n\n**İş kuralı:** [R3] Kurs yoksa **404**.",
     responses={404: {"description": "Kurs bulunamadı."}},
 )
-def kurs_getir(course_id: int):
+def get_course(course_id: int):
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM courses WHERE id = ?", (course_id,)).fetchone()
@@ -377,7 +377,7 @@ def kurs_getir(course_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{course_id} id'li kurs bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -396,7 +396,7 @@ def kurs_getir(course_id: int):
     ),
     responses={404: {"description": "Kurs bulunamadı veya pasif (erişim yok)."}},
 )
-def kurs_detay(course_id: int, viewer_user_id: int | None = None):
+def get_course_detail(course_id: int, viewer_user_id: int | None = None):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -408,23 +408,23 @@ def kurs_detay(course_id: int, viewer_user_id: int | None = None):
             )
         # [acc4] Pasif kurs: yalnızca erişim sahibi (satın almış) görebilir.
         if not c["is_active"]:
-            erisim = (
+            has_access = (
                 viewer_user_id is not None
-                and kurs_satin_alindi_mi(cursor, viewer_user_id, course_id)
+                and is_course_purchased(cursor, viewer_user_id, course_id)
             )
-            if not erisim:
+            if not has_access:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Kurs pasif; bu kursun detayına erişiminiz yok.",
                 )
 
-        ozet = cursor.execute(
+        summary = cursor.execute(
             "SELECT ROUND(AVG(rating),2) AS avg_rating, COUNT(*) AS n "
             "FROM reviews WHERE course_id = ? AND deleted_date IS NULL",
             (course_id,),
         ).fetchone()
 
-        egitmen_rows = cursor.execute(
+        instructor_rows = cursor.execute(
             "SELECT ci.instructor_id, u.full_name, ci.is_primary "
             "FROM course_instructors ci JOIN users u ON ci.instructor_id = u.id "
             "WHERE ci.course_id = ? AND ci.deleted_date IS NULL "
@@ -447,15 +447,15 @@ def kurs_detay(course_id: int, viewer_user_id: int | None = None):
             language_id=c["language_id"],
             difficulty_id=c["difficulty_id"],
             is_active=bool(c["is_active"]),
-            average_rating=ozet["avg_rating"],
-            review_count=ozet["n"],
+            average_rating=summary["avg_rating"],
+            review_count=summary["n"],
             instructors=[
                 InstructorBrief(
                     instructor_id=r["instructor_id"],
                     full_name=r["full_name"],
                     is_primary=bool(r["is_primary"]),
                 )
-                for r in egitmen_rows
+                for r in instructor_rows
             ],
             reviews=[
                 ReviewBrief(
@@ -491,10 +491,10 @@ def kurs_detay(course_id: int, viewer_user_id: int | None = None):
         422: {"description": "Doğrulama hatası."},
     },
 )
-def kurs_guncelle(
+def update_course(
     course_id: int,
     payload: CourseUpdate,
-    kullanici: dict = Depends(rol_gerektir("Instructor")),
+    user: dict = Depends(require_role("Instructor")),
 ):
     conn = get_connection()
     try:
@@ -508,13 +508,13 @@ def kurs_guncelle(
             )
 
         # FR9 acc6/acc8: yalnızca kursun aktif eğitmeni içerik/fiyat düzenleyebilir.
-        if not _aktif_egitmen_mi(cursor, course_id, kullanici["id"]):
+        if not _is_active_instructor(cursor, course_id, user["id"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Bu kursu yalnızca kendi eğitmenleri düzenleyebilir.",
             )
 
-        _fk_kontrol(cursor, payload.category_id, payload.language_id, payload.difficulty_id)
+        _check_fk(cursor, payload.category_id, payload.language_id, payload.difficulty_id)
 
         cursor.execute(
             "UPDATE courses SET category_id = ?, language_id = ?, course_name = ?, "
@@ -531,8 +531,8 @@ def kurs_guncelle(
         )
         conn.commit()
 
-        guncel = cursor.execute("SELECT * FROM courses WHERE id = ?", (course_id,)).fetchone()
-        return _satiri_cevir(guncel)
+        updated = cursor.execute("SELECT * FROM courses WHERE id = ?", (course_id,)).fetchone()
+        return _row_to_response(updated)
     finally:
         conn.close()
 
@@ -548,7 +548,7 @@ def kurs_guncelle(
     ),
     responses={404: {"description": "Kurs bulunamadı."}},
 )
-def kurs_pasiflestir(course_id: int, kullanici: dict = Depends(rol_gerektir("Instructor"))):
+def deactivate_course(course_id: int, user: dict = Depends(require_role("Instructor"))):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -559,7 +559,7 @@ def kurs_pasiflestir(course_id: int, kullanici: dict = Depends(rol_gerektir("Ins
                 detail=f"{course_id} id'li kurs bulunamadı.",
             )
         # FR9 acc6 (BİZ): kursu yalnızca kendi (aktif) eğitmeni pasife alabilir.
-        if not _aktif_egitmen_mi(cursor, course_id, kullanici["id"]):
+        if not _is_active_instructor(cursor, course_id, user["id"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Bu kursu yalnızca kendi eğitmenleri pasife alabilir.",
@@ -569,8 +569,8 @@ def kurs_pasiflestir(course_id: int, kullanici: dict = Depends(rol_gerektir("Ins
             (course_id,),
         )
         conn.commit()
-        guncel = cursor.execute("SELECT * FROM courses WHERE id = ?", (course_id,)).fetchone()
-        return _satiri_cevir(guncel)
+        updated = cursor.execute("SELECT * FROM courses WHERE id = ?", (course_id,)).fetchone()
+        return _row_to_response(updated)
     finally:
         conn.close()
 
@@ -582,7 +582,7 @@ def kurs_pasiflestir(course_id: int, kullanici: dict = Depends(rol_gerektir("Ins
     description="Pasif bir kursu tekrar aktif eder (is_active=1, deleted_date=NULL).\n\n**İş kuralı:** [R3] Kurs yoksa **404**.",
     responses={404: {"description": "Kurs bulunamadı."}},
 )
-def kurs_aktiflestir(course_id: int, kullanici: dict = Depends(rol_gerektir("Instructor"))):
+def activate_course(course_id: int, user: dict = Depends(require_role("Instructor"))):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -593,7 +593,7 @@ def kurs_aktiflestir(course_id: int, kullanici: dict = Depends(rol_gerektir("Ins
                 detail=f"{course_id} id'li kurs bulunamadı.",
             )
         # FR9 acc6 (BİZ): kursu yalnızca kendi (aktif) eğitmeni yeniden aktifleştirebilir.
-        if not _aktif_egitmen_mi(cursor, course_id, kullanici["id"]):
+        if not _is_active_instructor(cursor, course_id, user["id"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Bu kursu yalnızca kendi eğitmenleri aktifleştirebilir.",
@@ -603,7 +603,7 @@ def kurs_aktiflestir(course_id: int, kullanici: dict = Depends(rol_gerektir("Ins
             (course_id,),
         )
         conn.commit()
-        guncel = cursor.execute("SELECT * FROM courses WHERE id = ?", (course_id,)).fetchone()
-        return _satiri_cevir(guncel)
+        updated = cursor.execute("SELECT * FROM courses WHERE id = ?", (course_id,)).fetchone()
+        return _row_to_response(updated)
     finally:
         conn.close()

@@ -25,11 +25,11 @@ class ReviewCreate(BaseModel):
 
     @field_validator("comment")
     @classmethod
-    def yorum_temizle(cls, v: str | None) -> str | None:
+    def clean_comment(cls, v: str | None) -> str | None:
         if v is None:
             return None
-        temiz = v.strip()
-        return temiz if temiz else None
+        stripped = v.strip()
+        return stripped if stripped else None
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -46,11 +46,11 @@ class ReviewUpdate(BaseModel):
 
     @field_validator("comment")
     @classmethod
-    def yorum_temizle(cls, v: str | None) -> str | None:
+    def clean_comment(cls, v: str | None) -> str | None:
         if v is None:
             return None
-        temiz = v.strip()
-        return temiz if temiz else None
+        stripped = v.strip()
+        return stripped if stripped else None
 
     model_config = ConfigDict(
         json_schema_extra={"example": {"rating": 4, "comment": "Icerik guzel ama biraz hizli"}}

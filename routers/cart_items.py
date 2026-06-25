@@ -27,13 +27,13 @@ from models.cart_item import (
     CartSummary,
     CartSummaryItem,
 )
-from routers.carts import sepet_getir_veya_olustur
-from routers.order_items import kurs_satin_alindi_mi
+from routers.carts import get_or_create_cart
+from routers.order_items import is_course_purchased
 
 router = APIRouter(prefix="/cart-items", tags=["Cart Items"])
 
 
-def _satiri_cevir(row: sqlite3.Row) -> CartItemResponse:
+def _row_to_response(row: sqlite3.Row) -> CartItemResponse:
     return CartItemResponse(
         id=row["id"],
         cart_id=row["cart_id"],
@@ -42,11 +42,11 @@ def _satiri_cevir(row: sqlite3.Row) -> CartItemResponse:
     )
 
 
-def _user_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
+def _user_exists(cursor: sqlite3.Cursor, user_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is not None
 
 
-def _course_var_mi(cursor: sqlite3.Cursor, course_id: int) -> bool:
+def _course_exists(cursor: sqlite3.Cursor, course_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM courses WHERE id = ?", (course_id,)).fetchone() is not None
 
 
@@ -71,39 +71,39 @@ def _course_var_mi(cursor: sqlite3.Cursor, course_id: int) -> bool:
         409: {"description": "Bu kurs sepette zaten var VEYA zaten satın alınmış."},
     },
 )
-def sepete_ekle(payload: CartItemCreate):
+def add_to_cart(payload: CartItemCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
-        if not _user_var_mi(cursor, payload.user_id):
+        if not _user_exists(cursor, payload.user_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.user_id} id'li kullanıcı bulunamadı.",
             )
-        if not _course_var_mi(cursor, payload.course_id):
+        if not _course_exists(cursor, payload.course_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.course_id} id'li kurs bulunamadı.",
             )
 
         # [R-owned] (acc4) Zaten satın alınmış (ödeme COMPLETED) kurs sepete eklenemez.
-        if kurs_satin_alindi_mi(cursor, payload.user_id, payload.course_id):
+        if is_course_purchased(cursor, payload.user_id, payload.course_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu kursu zaten satın aldınız; sepete eklenemez.",
             )
 
         # Lazy: kullanıcının sepetini al, yoksa oluştur (commit etmez).
-        cart = sepet_getir_veya_olustur(cursor, payload.user_id)
+        cart = get_or_create_cart(cursor, payload.user_id)
         cart_id = cart["id"]
 
         # [R-dup] Aynı kurs sepette var mı?
-        var = cursor.execute(
+        existing = cursor.execute(
             "SELECT 1 FROM cart_items WHERE cart_id = ? AND course_id = ?",
             (cart_id, payload.course_id),
         ).fetchone()
-        if var is not None:
+        if existing is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu kurs sepette zaten var.",
@@ -115,9 +115,9 @@ def sepete_ekle(payload: CartItemCreate):
         )
         conn.commit()  # lazy sepet (varsa) + kalem birlikte kalıcı olur
 
-        yeni_id = cursor.lastrowid
-        row = cursor.execute("SELECT * FROM cart_items WHERE id = ?", (yeni_id,)).fetchone()
-        return _satiri_cevir(row)
+        new_id = cursor.lastrowid
+        row = cursor.execute("SELECT * FROM cart_items WHERE id = ?", (new_id,)).fetchone()
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -132,27 +132,27 @@ def sepete_ekle(payload: CartItemCreate):
         "- `user_id` → o kullanıcının sepetindeki kalemler."
     ),
 )
-def kalemleri_listele(cart_id: int | None = None, user_id: int | None = None):
+def list_cart_items(cart_id: int | None = None, user_id: int | None = None):
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        kosullar = []
-        parametreler: list = []
+        conditions = []
+        params: list = []
         if cart_id is not None:
-            kosullar.append("cart_id = ?")
-            parametreler.append(cart_id)
+            conditions.append("cart_id = ?")
+            params.append(cart_id)
         if user_id is not None:
             # user_id cart_items'ta yok; kullanıcının sepeti üzerinden filtrele.
-            kosullar.append("cart_id IN (SELECT id FROM carts WHERE user_id = ?)")
-            parametreler.append(user_id)
+            conditions.append("cart_id IN (SELECT id FROM carts WHERE user_id = ?)")
+            params.append(user_id)
 
         sql = "SELECT * FROM cart_items"
-        if kosullar:
-            sql += " WHERE " + " AND ".join(kosullar)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY id"
 
-        rows = cursor.execute(sql, parametreler).fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        rows = cursor.execute(sql, params).fetchall()
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -168,11 +168,11 @@ def kalemleri_listele(cart_id: int | None = None, user_id: int | None = None):
     ),
     responses={400: {"description": "Geçersiz user_id."}},
 )
-def sepet_ozeti(user_id: int):
+def cart_summary(user_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        if not _user_var_mi(cursor, user_id):
+        if not _user_exists(cursor, user_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{user_id} id'li kullanıcı bulunamadı.",
@@ -197,13 +197,13 @@ def sepet_ozeti(user_id: int):
             CartSummaryItem(course_id=r["course_id"], course_name=r["course_name"], price=r["price"])
             for r in rows
         ]
-        toplam = round(sum(it.price for it in items), 2)
+        total = round(sum(it.price for it in items), 2)
         return CartSummary(
             user_id=user_id,
             cart_id=cart_id,
             items=items,
             item_count=len(items),
-            total_price=toplam,
+            total_price=total,
         )
     finally:
         conn.close()
@@ -216,7 +216,7 @@ def sepet_ozeti(user_id: int):
     description="Verilen id'ye sahip kalemi döndürür.\n\n**İş kuralı:** [R3] Kalem yoksa **404**.",
     responses={404: {"description": "Sepet kalemi bulunamadı."}},
 )
-def kalem_getir(item_id: int):
+def get_cart_item(item_id: int):
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM cart_items WHERE id = ?", (item_id,)).fetchone()
@@ -225,7 +225,7 @@ def kalem_getir(item_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{item_id} id'li sepet kalemi bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -241,7 +241,7 @@ def kalem_getir(item_id: int):
     ),
     responses={404: {"description": "Sepet kalemi bulunamadı."}},
 )
-def sepetten_cikar(item_id: int):
+def remove_from_cart(item_id: int):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -251,9 +251,9 @@ def sepetten_cikar(item_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{item_id} id'li sepet kalemi bulunamadı.",
             )
-        silinen = _satiri_cevir(row)  # silmeden önce döndürülecek hali sakla
+        deleted_item = _row_to_response(row)  # silmeden önce döndürülecek hali sakla
         cursor.execute("DELETE FROM cart_items WHERE id = ?", (item_id,))
         conn.commit()
-        return silinen
+        return deleted_item
     finally:
         conn.close()

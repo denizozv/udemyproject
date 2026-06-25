@@ -22,7 +22,7 @@ from models.order_item import OrderItemCreate, OrderItemResponse
 router = APIRouter(prefix="/order-items", tags=["Order Items"])
 
 
-def _satiri_cevir(row: sqlite3.Row) -> OrderItemResponse:
+def _row_to_response(row: sqlite3.Row) -> OrderItemResponse:
     return OrderItemResponse(
         id=row["id"],
         order_id=row["order_id"],
@@ -32,15 +32,15 @@ def _satiri_cevir(row: sqlite3.Row) -> OrderItemResponse:
     )
 
 
-def _order_var_mi(cursor: sqlite3.Cursor, order_id: int) -> bool:
+def _order_exists(cursor: sqlite3.Cursor, order_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM orders WHERE id = ?", (order_id,)).fetchone() is not None
 
 
-def _course_var_mi(cursor: sqlite3.Cursor, course_id: int) -> bool:
+def _course_exists(cursor: sqlite3.Cursor, course_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM courses WHERE id = ?", (course_id,)).fetchone() is not None
 
 
-def kurs_satin_alindi_mi(cursor: sqlite3.Cursor, user_id: int, course_id: int) -> bool:
+def is_course_purchased(cursor: sqlite3.Cursor, user_id: int, course_id: int) -> bool:
     """
     Kullanıcı bu kursu SATIN ALMIŞ mı? (paylaşılan kural — REVIEWS acc2, CART_ITEMS acc4)
 
@@ -83,25 +83,25 @@ def kurs_satin_alindi_mi(cursor: sqlite3.Cursor, user_id: int, course_id: int) -
         422: {"description": "Doğrulama hatası (unit_price < 0)."},
     },
 )
-def kalem_olustur(payload: OrderItemCreate):
+def create_order_item(payload: OrderItemCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        if not _order_var_mi(cursor, payload.order_id):
+        if not _order_exists(cursor, payload.order_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.order_id} id'li sipariş bulunamadı.",
             )
-        if not _course_var_mi(cursor, payload.course_id):
+        if not _course_exists(cursor, payload.course_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.course_id} id'li kurs bulunamadı.",
             )
-        var = cursor.execute(
+        existing = cursor.execute(
             "SELECT 1 FROM order_items WHERE order_id = ? AND course_id = ?",
             (payload.order_id, payload.course_id),
         ).fetchone()
-        if var is not None:
+        if existing is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu kurs bu siparişte zaten var.",
@@ -112,9 +112,9 @@ def kalem_olustur(payload: OrderItemCreate):
             (payload.order_id, payload.course_id, payload.unit_price),
         )
         conn.commit()
-        yeni_id = cursor.lastrowid
-        row = cursor.execute("SELECT * FROM order_items WHERE id = ?", (yeni_id,)).fetchone()
-        return _satiri_cevir(row)
+        new_id = cursor.lastrowid
+        row = cursor.execute("SELECT * FROM order_items WHERE id = ?", (new_id,)).fetchone()
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -125,26 +125,26 @@ def kalem_olustur(payload: OrderItemCreate):
     summary="Sipariş kalemlerini listele",
     description="Sipariş kalemlerini listeler. `order_id` / `course_id` ile filtrelenebilir.",
 )
-def kalemleri_listele(order_id: int | None = None, course_id: int | None = None):
+def list_order_items(order_id: int | None = None, course_id: int | None = None):
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        kosullar = []
-        parametreler: list = []
+        conditions = []
+        params: list = []
         if order_id is not None:
-            kosullar.append("order_id = ?")
-            parametreler.append(order_id)
+            conditions.append("order_id = ?")
+            params.append(order_id)
         if course_id is not None:
-            kosullar.append("course_id = ?")
-            parametreler.append(course_id)
+            conditions.append("course_id = ?")
+            params.append(course_id)
 
         sql = "SELECT * FROM order_items"
-        if kosullar:
-            sql += " WHERE " + " AND ".join(kosullar)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY id"
 
-        rows = cursor.execute(sql, parametreler).fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        rows = cursor.execute(sql, params).fetchall()
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -156,7 +156,7 @@ def kalemleri_listele(order_id: int | None = None, course_id: int | None = None)
     description="Verilen id'ye sahip kalemi döndürür.\n\n**İş kuralı:** [R3] Kalem yoksa **404**.",
     responses={404: {"description": "Sipariş kalemi bulunamadı."}},
 )
-def kalem_getir(item_id: int):
+def get_order_item(item_id: int):
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM order_items WHERE id = ?", (item_id,)).fetchone()
@@ -165,6 +165,6 @@ def kalem_getir(item_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{item_id} id'li sipariş kalemi bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()

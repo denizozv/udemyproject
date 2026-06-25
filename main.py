@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 
-from auth_deps import rol_gerektir
+from auth_deps import require_role
 from database import init_db
 
 
@@ -101,8 +101,8 @@ app.include_router(categories.router)
 app.include_router(users.router)
 # FR11 / FR12: kullanıcı rolleri ve kara liste yönetimi TAMAMEN Admin'e özeldir
 # (okuma dahil) -> router seviyesinde Admin guard'ı.
-app.include_router(user_roles.router, dependencies=[Depends(rol_gerektir("Admin"))])
-app.include_router(blacklist.router, dependencies=[Depends(rol_gerektir("Admin"))])
+app.include_router(user_roles.router, dependencies=[Depends(require_role("Admin"))])
+app.include_router(blacklist.router, dependencies=[Depends(require_role("Admin"))])
 app.include_router(courses.router)
 app.include_router(course_instructors.router)
 app.include_router(reviews.router)

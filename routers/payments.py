@@ -27,10 +27,10 @@ from models.payment import PaymentCreate, PaymentResponse, PaymentStatusChange
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
 # FR8 acc7: yeni ödemenin başlangıç durumunun kodu.
-BASLANGIC_DURUM_KODU = "PENDING"
+INITIAL_STATUS_CODE = "PENDING"
 
 
-def _satiri_cevir(row: sqlite3.Row) -> PaymentResponse:
+def _row_to_response(row: sqlite3.Row) -> PaymentResponse:
     return PaymentResponse(
         id=row["id"],
         order_id=row["order_id"],
@@ -42,11 +42,11 @@ def _satiri_cevir(row: sqlite3.Row) -> PaymentResponse:
     )
 
 
-def _order_var_mi(cursor: sqlite3.Cursor, order_id: int) -> bool:
+def _order_exists(cursor: sqlite3.Cursor, order_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM orders WHERE id = ?", (order_id,)).fetchone() is not None
 
 
-def _method_aktif_mi(cursor: sqlite3.Cursor, method_id: int) -> bool:
+def _is_method_active(cursor: sqlite3.Cursor, method_id: int) -> bool:
     return (
         cursor.execute(
             "SELECT 1 FROM payment_methods WHERE id = ? AND is_active = 1", (method_id,)
@@ -55,7 +55,7 @@ def _method_aktif_mi(cursor: sqlite3.Cursor, method_id: int) -> bool:
     )
 
 
-def _status_aktif_mi(cursor: sqlite3.Cursor, status_id: int) -> bool:
+def _is_status_active(cursor: sqlite3.Cursor, status_id: int) -> bool:
     return (
         cursor.execute(
             "SELECT 1 FROM payment_statuses WHERE id = ? AND is_active = 1", (status_id,)
@@ -85,27 +85,27 @@ def _status_aktif_mi(cursor: sqlite3.Cursor, status_id: int) -> bool:
         422: {"description": "Doğrulama hatası (address boş)."},
     },
 )
-def odeme_olustur(payload: PaymentCreate):
+def create_payment(payload: PaymentCreate):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
-        if not _order_var_mi(cursor, payload.order_id):
+        if not _order_exists(cursor, payload.order_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.order_id} id'li sipariş bulunamadı.",
             )
         # [R-tek] Siparişin zaten ödemesi var mı?
-        mevcut = cursor.execute(
+        existing = cursor.execute(
             "SELECT id FROM payments WHERE order_id = ?", (payload.order_id,)
         ).fetchone()
-        if mevcut is not None:
+        if existing is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Bu siparişin zaten bir ödemesi var.",
             )
         # [R-method]
-        if not _method_aktif_mi(cursor, payload.payment_method_id):
+        if not _is_method_active(cursor, payload.payment_method_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.payment_method_id} id'li aktif bir ödeme yöntemi bulunamadı.",
@@ -113,13 +113,13 @@ def odeme_olustur(payload: PaymentCreate):
         # [acc7] Aktif PENDING durumunu bul.
         pending = cursor.execute(
             "SELECT id FROM payment_statuses WHERE lower(code) = lower(?) AND is_active = 1",
-            (BASLANGIC_DURUM_KODU,),
+            (INITIAL_STATUS_CODE,),
         ).fetchone()
         if pending is None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    f"Ödeme oluşturulamadı: sistemde aktif '{BASLANGIC_DURUM_KODU}' "
+                    f"Ödeme oluşturulamadı: sistemde aktif '{INITIAL_STATUS_CODE}' "
                     "ödeme durumu tanımlı değil. Önce POST /payment-statuses ile ekleyin."
                 ),
             )
@@ -138,9 +138,9 @@ def odeme_olustur(payload: PaymentCreate):
             )
         conn.commit()
 
-        yeni_id = cursor.lastrowid
-        row = cursor.execute("SELECT * FROM payments WHERE id = ?", (yeni_id,)).fetchone()
-        return _satiri_cevir(row)
+        new_id = cursor.lastrowid
+        row = cursor.execute("SELECT * FROM payments WHERE id = ?", (new_id,)).fetchone()
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -151,7 +151,7 @@ def odeme_olustur(payload: PaymentCreate):
     summary="Ödemeleri listele",
     description="Ödemeleri listeler. `order_id` verilirse o siparişin ödemesi.",
 )
-def odemeleri_listele(order_id: int | None = None):
+def list_payments(order_id: int | None = None):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -161,7 +161,7 @@ def odemeleri_listele(order_id: int | None = None):
             ).fetchall()
         else:
             rows = cursor.execute("SELECT * FROM payments ORDER BY id").fetchall()
-        return [_satiri_cevir(r) for r in rows]
+        return [_row_to_response(r) for r in rows]
     finally:
         conn.close()
 
@@ -173,7 +173,7 @@ def odemeleri_listele(order_id: int | None = None):
     description="Verilen id'ye sahip ödemeyi döndürür.\n\n**İş kuralı:** [R3] Ödeme yoksa **404**.",
     responses={404: {"description": "Ödeme bulunamadı."}},
 )
-def odeme_getir(payment_id: int):
+def get_payment(payment_id: int):
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM payments WHERE id = ?", (payment_id,)).fetchone()
@@ -182,7 +182,7 @@ def odeme_getir(payment_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{payment_id} id'li ödeme bulunamadı.",
             )
-        return _satiri_cevir(row)
+        return _row_to_response(row)
     finally:
         conn.close()
 
@@ -207,7 +207,7 @@ def odeme_getir(payment_id: int):
         400: {"description": "Geçersiz/pasif ödeme durumu."},
     },
 )
-def odeme_durumu_degistir(payment_id: int, payload: PaymentStatusChange):
+def change_payment_status(payment_id: int, payload: PaymentStatusChange):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -217,7 +217,7 @@ def odeme_durumu_degistir(payment_id: int, payload: PaymentStatusChange):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{payment_id} id'li ödeme bulunamadı.",
             )
-        if not _status_aktif_mi(cursor, payload.payment_status_id):
+        if not _is_status_active(cursor, payload.payment_status_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.payment_status_id} id'li aktif bir ödeme durumu bulunamadı.",
@@ -229,10 +229,10 @@ def odeme_durumu_degistir(payment_id: int, payload: PaymentStatusChange):
 
         # FR8 acc8: ödeme COMPLETED'a geçtiyse, siparişi veren kullanıcının sepeti
         # temizlenir. (FAILED'da hiçbir şey yapılmaz -> sepet korunur, acc9.)
-        yeni_kod = cursor.execute(
+        new_code = cursor.execute(
             "SELECT code FROM payment_statuses WHERE id = ?", (payload.payment_status_id,)
         ).fetchone()["code"]
-        if yeni_kod.upper() == "COMPLETED":
+        if new_code.upper() == "COMPLETED":
             cursor.execute(
                 "DELETE FROM cart_items WHERE cart_id IN ("
                 "  SELECT id FROM carts WHERE user_id = (SELECT user_id FROM orders WHERE id = ?))",
@@ -240,7 +240,7 @@ def odeme_durumu_degistir(payment_id: int, payload: PaymentStatusChange):
             )
 
         conn.commit()
-        guncel = cursor.execute("SELECT * FROM payments WHERE id = ?", (payment_id,)).fetchone()
-        return _satiri_cevir(guncel)
+        updated = cursor.execute("SELECT * FROM payments WHERE id = ?", (payment_id,)).fetchone()
+        return _row_to_response(updated)
     finally:
         conn.close()

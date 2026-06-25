@@ -34,11 +34,11 @@ class CategoryCreate(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def name_bos_olamaz(cls, deger: str) -> str:
-        temiz = deger.strip()
-        if not temiz:
+    def name_not_empty(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
             raise ValueError("Kategori adı boş olamaz.")
-        return temiz
+        return stripped
 
     model_config = ConfigDict(
         json_schema_extra={"example": {"parent_id": 1, "name": "Web Gelistirme"}}
@@ -67,11 +67,11 @@ class CategoryUpdate(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def name_bos_olamaz(cls, deger: str) -> str:
-        temiz = deger.strip()
-        if not temiz:
+    def name_not_empty(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
             raise ValueError("Kategori adı boş olamaz.")
-        return temiz
+        return stripped
 
     model_config = ConfigDict(
         json_schema_extra={"example": {"parent_id": 1, "name": "Mobil Gelistirme"}}

@@ -1,0 +1,6 @@
+# Python bağımlılıkları
+# Kurulum: pip install -r requirements.txt
+
+fastapi          # Web/API çatısı (framework)
+uvicorn[standard]  # Uygulamayı çalıştıran ASGI sunucusu
+# pydantic, fastapi ile birlikte otomatik gelir (ayrıca yazmaya gerek yok).

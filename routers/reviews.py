@@ -6,14 +6,14 @@ REVIEWS entity'sinin endpoint'leri. Kurs değerlendirmeleri.
 Uygulanan iş kuralları (BİZ FR6):
   - [R1] rating zorunlu ve 1-5 arası      -> Pydantic (422) (acc4/acc5)
   - [R-fk] course_id ve user_id mevcut olmalı -> 400
+  - [R-owned] (acc2) yalnızca kursu SATIN ALMIŞ (ödemesi COMPLETED) kullanıcı
+              değerlendirebilir -> 403
   - [R-tek] bir kullanıcı bir kursa yalnızca 1 AKTİF değerlendirme yapabilir
             -> 409 (acc3)
   - [R3] olmayan id istenirse 404
   - Silme = soft-delete (deleted_date)
 
 ERTELENEN:
-  - [acc2] yalnızca kursu SATIN ALMIŞ kullanıcı değerlendirebilir -> ORDER_ITEMS
-    tablosu eklendiğinde buraya geri-bağlanacak (şimdilik kontrol edilmiyor).
   - [acc6] kursun ortalama puanına dahil etme (FR4/FR5 okuma/hesap) -> ileride.
 """
 
@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from database import get_connection
 from models.review import ReviewCreate, ReviewResponse, ReviewUpdate
+from routers.order_items import kurs_satin_alindi_mi
 
 router = APIRouter(prefix="/reviews", tags=["Reviews"])
 
@@ -71,14 +72,15 @@ def _aktif_review_var_mi(cursor: sqlite3.Cursor, course_id: int, user_id: int) -
         "**İş kuralları:**\n"
         "- [R1] `rating` zorunlu ve 1-5 arası → 422 (acc4/acc5).\n"
         "- [R-fk] `course_id` ve `user_id` mevcut olmalı → **400**.\n"
+        "- [R-owned] Kullanıcı kursu satın almış (ödemesi COMPLETED) olmalı → "
+        "**403** (acc2).\n"
         "- [R-tek] Kullanıcının bu kursa zaten aktif bir değerlendirmesi varsa → "
-        "**409** (acc3).\n\n"
-        "_Not: [acc2] 'yalnızca satın almış kullanıcı değerlendirebilir' kuralı "
-        "ORDER_ITEMS eklenince devreye girecek; şimdilik kontrol edilmiyor._"
+        "**409** (acc3)."
     ),
     responses={
         201: {"description": "Değerlendirme eklendi."},
         400: {"description": "Geçersiz course_id veya user_id."},
+        403: {"description": "Kullanıcı bu kursu satın almamış (değerlendiremez)."},
         409: {"description": "Kullanıcının bu kursa zaten aktif değerlendirmesi var."},
         422: {"description": "Doğrulama hatası (rating eksik/aralık dışı)."},
     },
@@ -97,6 +99,12 @@ def degerlendirme_yap(payload: ReviewCreate):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.user_id} id'li kullanıcı bulunamadı.",
+            )
+        # [R-owned] (acc2) Yalnızca kursu satın almış (ödeme COMPLETED) kullanıcı.
+        if not kurs_satin_alindi_mi(cursor, payload.user_id, payload.course_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bu kursu değerlendirebilmek için satın almış olmalısınız.",
             )
         if _aktif_review_var_mi(cursor, payload.course_id, payload.user_id):
             raise HTTPException(

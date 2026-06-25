@@ -28,6 +28,7 @@ from models.cart_item import (
     CartSummaryItem,
 )
 from routers.carts import sepet_getir_veya_olustur
+from routers.order_items import kurs_satin_alindi_mi
 
 router = APIRouter(prefix="/cart-items", tags=["Cart Items"])
 
@@ -60,14 +61,14 @@ def _course_var_mi(cursor: sqlite3.Cursor, course_id: int) -> bool:
         "**İş kuralları:**\n"
         "- [R-user] `user_id` mevcut olmalı → **400**.\n"
         "- [R-course] `course_id` mevcut olmalı → **400**.\n"
-        "- [R-dup] Aynı kurs sepette zaten varsa → **409** (acc3).\n\n"
-        "_Not: [acc4] 'zaten satın alınmış kurs eklenemez' kuralı ORDER_ITEMS "
-        "eklenince devreye girecek._"
+        "- [R-dup] Aynı kurs sepette zaten varsa → **409** (acc3).\n"
+        "- [R-owned] Kullanıcı bu kursu zaten satın aldıysa (ödemesi COMPLETED) → "
+        "**409** (acc4)."
     ),
     responses={
         201: {"description": "Kurs sepete eklendi."},
         400: {"description": "Geçersiz user_id veya course_id."},
-        409: {"description": "Bu kurs sepette zaten var."},
+        409: {"description": "Bu kurs sepette zaten var VEYA zaten satın alınmış."},
     },
 )
 def sepete_ekle(payload: CartItemCreate):
@@ -84,6 +85,13 @@ def sepete_ekle(payload: CartItemCreate):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.course_id} id'li kurs bulunamadı.",
+            )
+
+        # [R-owned] (acc4) Zaten satın alınmış (ödeme COMPLETED) kurs sepete eklenemez.
+        if kurs_satin_alindi_mi(cursor, payload.user_id, payload.course_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Bu kursu zaten satın aldınız; sepete eklenemez.",
             )
 
         # Lazy: kullanıcının sepetini al, yoksa oluştur (commit etmez).

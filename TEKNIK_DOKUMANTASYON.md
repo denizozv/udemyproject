@@ -47,7 +47,10 @@ udemyproject/
 │   ├── cart_item.py           # CART_ITEMS modelleri (sepet kalemi + özet)
 │   ├── order.py               # ORDERS modelleri (sipariş)
 │   ├── order_item.py          # ORDER_ITEMS modelleri (sipariş kalemi + snapshot)
-│   └── payment.py             # PAYMENTS modelleri (ödeme + durum değişimi)
+│   ├── payment.py             # PAYMENTS modelleri (ödeme + durum değişimi)
+│   ├── checkout.py            # CHECKOUT istek/sonuç modelleri (sepet→sipariş)
+│   ├── catalog.py             # FR4/FR5 okuma modelleri (kart, sayfa, detay)
+│   └── auth.py                # FR2 login istek/sonuç modelleri
 ├── routers/                   # Entity router'ları (her entity'nin endpoint'leri ayrı dosyada)
 │   ├── __init__.py            # Klasörü Python paketi yapar
 │   ├── roles.py               # ROLES endpoint'leri
@@ -65,8 +68,9 @@ udemyproject/
 │   ├── carts.py               # CARTS endpoint'leri (sepet + lazy yardımcı)
 │   ├── cart_items.py          # CART_ITEMS endpoint'leri (sepete ekle/çıkar/özet)
 │   ├── orders.py              # ORDERS endpoint'leri (sipariş oluştur/listele/getir)
-│   ├── order_items.py         # ORDER_ITEMS endpoint'leri (kalem oluştur/listele/getir)
-│   └── payments.py            # PAYMENTS endpoint'leri (ödeme + durum değişimi)
+│   ├── order_items.py         # ORDER_ITEMS endpoint'leri (kalem + satın alma yardımcısı)
+│   ├── payments.py            # PAYMENTS endpoint'leri (ödeme + durum değişimi)
+│   └── auth.py                # AUTH endpoint'i (login — FR2)
 ├── TEKNIK_DOKUMANTASYON.md    # Bu dosya
 └── API_KULLANIM.md            # API kullanım kılavuzu
 ```
@@ -1002,14 +1006,115 @@ ROLES, LANGUAGES, DIFFICULTY_LEVELS, PAYMENT_METHODS, PAYMENT_STATUSES, CATEGORI
 USERS, USER_ROLES, BLACKLIST, COURSES, COURSE_INSTRUCTORS, REVIEWS, CARTS,
 CART_ITEMS, ORDERS, ORDER_ITEMS, PAYMENTS.
 
-## Sonraki Adım — CHECKOUT akışı (FR8)
+### Adım 20 — CHECKOUT akışı (FR8) `POST /orders/checkout`
 
-Önerilen son büyük adım: **`POST /orders/checkout`** — kullanıcının sepetinden
-(CART_ITEMS) tek transaction'da:
-1. ORDER oluştur, her kurs için ORDER_ITEM (`unit_price` = kursun o anki fiyatı, snapshot),
-2. `total_price` = kalemler toplamı (acc6),
-3. PAYMENT (PENDING) oluştur (adres + yöntem),
-4. sepeti temizle (CART_ITEMS sil).
-Kurallar: boş sepetle checkout yok (acc... → 409/400). Bu adım gelince ertelenen
-**REVIEWS acc2** ve **CART_ITEMS acc4** (satın alma geçmişi) de geri-bağlanabilir.
-Analist onayı beklenir.
+Sepeti tek transaction'da siparişe dönüştüren uçtan uca akış.
+
+#### Eklenen/değişen dosyalar
+**1) `models/checkout.py` (YENİ):** `CheckoutRequest` (user_id, payment_method_id,
+address), `CheckoutResult` (order + items + payment + item_count + total_price).
+
+**2) `routers/orders.py` → `checkout` endpoint'i eklendi** (`POST /orders/checkout`).
+Sabit: `CHECKOUT_PENDING_KODU = "PENDING"`.
+
+**Akış (tek transaction, tek commit):**
+1. `user_id` mevcut mu? → yoksa **400**.
+2. `payment_method_id` aktif mi? → yoksa **400** (acc2).
+3. Aktif `PENDING` ödeme durumu var mı? → yoksa **409** (acc7).
+4. Kullanıcının sepeti ve kalemleri var mı? → yoksa/boşsa **409** (boş sepetle checkout yok).
+5. `total_price` = sepet kalemlerinin **güncel** kurs fiyatları toplamı (acc6).
+6. ORDER oluştur; her kalem için ORDER_ITEM (`unit_price` = o anki fiyat, snapshot — acc5).
+7. PENDING PAYMENT oluştur (adres + yöntem — acc7).
+8. CART_ITEMS sil (sepet temizlenir).
+9. Sonuç olarak oluşan order + items + payment döndürülür (201).
+
+#### Uygulanan iş kuralları (FR8)
+- acc3 (address zorunlu, 422), acc4 (order + her kurs için order_item),
+  acc5 (unit_price snapshot), acc6 (total = kalemler toplamı), acc7 (PENDING ödeme).
+- Boş sepetle checkout engellenir (**409**).
+
+#### Yapılan test (doğrulama)
+boş sepet→409 ✓, address boş→422 ✓, checkout (order+2 kalem snapshot+PENDING ödeme,
+total=799.4) ✓, **sepet temizlendi (0 kalem)** ✓, tekrar checkout→409 ✓,
+olmayan user→400 ✓, pasif yöntem→400 ✓.
+
+---
+
+### Adım 21 — Satın alma kuralları geri-bağlandı (REVIEWS acc2 + CART_ITEMS acc4)
+
+> **Analist kararı — "satın alınmış" tanımı:** Kurs, kullanıcının ödemesi
+> **COMPLETED** olan bir siparişinde (ORDER_ITEM) yer alıyorsa satın alınmış
+> sayılır. PENDING/FAILED/REFUNDED saymaz (FR8 acc8/acc10/acc11 ile tutarlı).
+
+#### Eklenen/değişen dosyalar
+**1) `routers/order_items.py` → `kurs_satin_alindi_mi(cursor, user_id, course_id)`**
+yardımcısı (paylaşılan). ORDER_ITEMS + ORDERS + PAYMENTS + PAYMENT_STATUSES join'i
+ile "COMPLETED ödemeli siparişte var mı?" sorusunu yanıtlar.
+
+**2) `routers/cart_items.py` → `sepete_ekle`** içine **[R-owned]** eklendi:
+satın alınmış kurs sepete eklenemez → **409** (FR7 acc4).
+
+**3) `routers/reviews.py` → `degerlendirme_yap`** içine **[R-owned]** eklendi:
+kursu satın almamış kullanıcı değerlendiremez → **403** (FR6 acc2).
+
+#### Yapılan test (doğrulama)
+PENDING ödemeli kurs satın alınmamış sayılır → review 403 ✓, sepete eklenebilir ✓.
+Ödeme COMPLETED yapılınca → sepete ekleme 409 ✓, review başarılı ✓; satın alınmamış
+kurs review 403 ✓, sepete eklenebilir ✓.
+
+---
+
+### Adım 22 — Kalan FR'ler toplu uygulandı (erişim, FR4/FR5, FR2, cleanup)
+
+Beş başlık birlikte tamamlandı:
+
+**1) Sahip olunan kurslar / erişim (FR8 acc8/10/11):**
+`GET /users/{id}/courses` — kullanıcının **COMPLETED** ödemeli siparişlerinden
+türeyen kursları döndürür. Erişim COMPLETED ile doğar; REFUNDED/PENDING saymaz.
+(Ayrı bir "erişim" tablosu yok; erişim sorguyla türetilir.)
+
+**2) FR4 katalog + FR5 detay** (`routers/courses.py`, `models/catalog.py`):
+- `GET /courses/catalog` — yalnız aktif kurslar; filtreler (q = kurs adı VEYA
+  eğitmen adı, kategori, dil, seviye, fiyat aralığı), sıralama (`popularity`
+  varsayılan = son 30g COMPLETED satın alma; `price`, `rating` = aktif değerlendirme
+  ortalaması, `newest`), sayfalama (12/sayfa). Hesaplanan alanlar SQL alt
+  sorgularıyla, sıralama Python'da (null puanlar sona).
+- `GET /courses/{id}/detail` — ortalama puan + değerlendirme sayısı + aktif
+  eğitmenler + aktif yorumlar. Pasif kursun detayı, satın almamış kullanıcıya
+  **404** (acc4; `viewer_user_id` ile erişim kontrolü).
+
+**3) FR2 login** (`routers/auth.py`, `models/auth.py`):
+`POST /auth/login` — kimlik doğrular, hatada **401** (genel mesaj, acc2), geçerli
+kara liste yasağında **403** (acc4/5), silinmiş+saklamada hesapta yeniden
+etkinleştirme onayı (`reactivation_required`/`confirm_reactivation`, acc6/7),
+saklama süresi dolmuşta 401 (acc8), başarıda tüm aktif roller (acc9/10).
+**Token/JWT ve endpoint-bazlı yetki YOK** (kapsam dışı); hesap kilidi (CLAUDE acc11) yok.
+
+**4) cleanup genişletildi** (`routers/users.py`): `cleanup-expired` artık silinen
+kullanıcının carts, cart_items, orders, order_items, payments, reviews,
+course_instructors, user_roles, blacklist kayıtlarını da FK sırasıyla siler.
+`banned_by` referanslı kullanıcı yine atlanır.
+
+**5)** (1. madde ile aynı — owned courses endpoint).
+
+#### Yapılan test (doğrulama)
+owned courses (COMPLETED) ✓; katalog popülerlik/fiyat/puan sıralama + eğitmen/ad
+arama + geçersiz sort/fiyat→400 ✓; detay avg+eğitmen+yorum ✓ + pasif kurs→404 ✓;
+login doğru/yanlış→401/banlı→403/roller/reaktivasyon akışı ✓; cleanup cascade
+(tüm bağlı kayıtlar silindi) ✓ + banned_by atlama ✓.
+
+---
+
+## Durum (güncel)
+
+17 tablo + CHECKOUT + satın alma kuralları + erişim + FR4/FR5 + FR2 login +
+genişletilmiş cleanup. Uygulama bütün olarak hatasız yükleniyor.
+
+### Bilinçli olarak KAPSAM DIŞI bırakılanlar
+- **Token/JWT ve endpoint-bazlı yetkilendirme**: login kimlik + rol döndürür ama
+  her endpoint'in çağıranı doğrulaması/yetki kontrolü uygulanmadı (büyük ve ayrı
+  bir mimari konu; analistle ayrıca planlanmalı).
+- **Hesap kilidi** (5 hatalı giriş — CLAUDE acc11), **anonimleştirme batch**'i
+  yerine doğrudan kalıcı silme (BİZ FR3 acc4 tercih edildi).
+- **thumbnail_url** ve CARTS.is_active gibi Excel'de olmayan kolonlar (en baştaki
+  karar gereği eklenmedi).

@@ -20,9 +20,23 @@ import sqlite3
 from fastapi import APIRouter, HTTPException, status
 
 from database import get_connection
+from models.catalog import (
+    CourseCard,
+    CourseCatalogPage,
+    CourseDetail,
+    InstructorBrief,
+    ReviewBrief,
+)
 from models.course import CourseCreate, CourseResponse, CourseUpdate
+from routers.order_items import kurs_satin_alindi_mi
 
 router = APIRouter(prefix="/courses", tags=["Courses"])
+
+# FR4 acc8: sayfa başına kurs sayısı.
+SAYFA_BOYUTU = 12
+
+# FR4 acc6/acc7: geçerli sıralama seçenekleri (varsayılan popülerlik).
+GECERLI_SIRALAMALAR = {"popularity", "price", "rating", "newest"}
 
 # Hangi alanın hangi lookup tablosuna baktığı (mevcut+aktif kontrolü için).
 _LOOKUP_TABLOLARI = {
@@ -189,6 +203,130 @@ def kurslari_listele(
 
 
 @router.get(
+    "/catalog",
+    response_model=CourseCatalogPage,
+    summary="Kurs kataloğu (FR4: filtre + arama + sıralama + sayfalama)",
+    description=(
+        "Öğrenciye yönelik kurs kataloğu. Yalnızca **aktif** kurslar (acc5).\n\n"
+        "**Filtreler:** `q` (kurs adı VEYA eğitmen adında geçen ifade — acc2), "
+        "`category_id`, `language_id`, `difficulty_id`, `min_price`, `max_price` "
+        "(alt > üst ise **400** — acc4).\n\n"
+        "**Sıralama (`sort`)**: `popularity` (varsayılan; son 30 günde COMPLETED "
+        "satın alma adedi — acc7), `price`, `rating` (aktif değerlendirme ortalaması; "
+        "puanı olmayanlar sona — acc10), `newest`.\n\n"
+        "**Sayfalama:** `page` (1'den başlar), sayfa başına 12 (acc8)."
+    ),
+    responses={400: {"description": "Geçersiz fiyat aralığı veya sıralama değeri."}},
+)
+def kurs_katalogu(
+    q: str | None = None,
+    category_id: int | None = None,
+    language_id: int | None = None,
+    difficulty_id: int | None = None,
+    min_price: float | None = None,
+    max_price: float | None = None,
+    sort: str = "popularity",
+    page: int = 1,
+):
+    if min_price is not None and max_price is not None and min_price > max_price:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Fiyat aralığında alt sınır üst sınırdan büyük olamaz.",
+        )
+    if sort not in GECERLI_SIRALAMALAR:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Geçersiz sıralama. Seçenekler: {', '.join(sorted(GECERLI_SIRALAMALAR))}.",
+        )
+    if page < 1:
+        page = 1
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        kosullar = ["c.is_active = 1"]  # acc5: yalnızca aktif kurslar
+        parametreler: list = []
+        if q:
+            kosullar.append(
+                "(c.course_name LIKE ? OR EXISTS ("
+                " SELECT 1 FROM course_instructors ci2 JOIN users u2 ON ci2.instructor_id = u2.id"
+                " WHERE ci2.course_id = c.id AND ci2.deleted_date IS NULL AND u2.full_name LIKE ?))"
+            )
+            parametreler += [f"%{q}%", f"%{q}%"]
+        if category_id is not None:
+            kosullar.append("c.category_id = ?")
+            parametreler.append(category_id)
+        if language_id is not None:
+            kosullar.append("c.language_id = ?")
+            parametreler.append(language_id)
+        if difficulty_id is not None:
+            kosullar.append("c.difficulty_id = ?")
+            parametreler.append(difficulty_id)
+        if min_price is not None:
+            kosullar.append("c.price >= ?")
+            parametreler.append(min_price)
+        if max_price is not None:
+            kosullar.append("c.price <= ?")
+            parametreler.append(max_price)
+
+        sql = (
+            "SELECT c.*, "
+            "(SELECT ROUND(AVG(r.rating),2) FROM reviews r WHERE r.course_id=c.id AND r.deleted_date IS NULL) AS avg_rating, "
+            "(SELECT COUNT(*) FROM reviews r WHERE r.course_id=c.id AND r.deleted_date IS NULL) AS review_count, "
+            "(SELECT u.full_name FROM course_instructors ci JOIN users u ON ci.instructor_id=u.id "
+            " WHERE ci.course_id=c.id AND ci.is_primary=1 AND ci.deleted_date IS NULL LIMIT 1) AS primary_instructor, "
+            "(SELECT COUNT(*) FROM order_items oi JOIN orders o ON oi.order_id=o.id "
+            " JOIN payments p ON p.order_id=o.id JOIN payment_statuses ps ON p.payment_status_id=ps.id "
+            " WHERE oi.course_id=c.id AND lower(ps.code)='completed' "
+            "   AND o.created_date >= datetime('now','localtime','-30 days')) AS popularity "
+            "FROM courses c WHERE " + " AND ".join(kosullar)
+        )
+        rows = cursor.execute(sql, parametreler).fetchall()
+
+        # Sıralama (Python; stable sort ile ikincil ölçütler).
+        if sort == "price":
+            rows.sort(key=lambda r: r["price"])
+        elif sort == "newest":
+            rows.sort(key=lambda r: (r["created_date"], r["id"]), reverse=True)
+        elif sort == "rating":
+            # Puanı olmayanlar (None) en sona; sonra puan azalan.
+            rows.sort(key=lambda r: (r["avg_rating"] is None, -(r["avg_rating"] or 0.0)))
+        else:  # popularity (varsayılan); eşitlikte en yeni
+            rows.sort(key=lambda r: (r["created_date"], r["id"]), reverse=True)
+            rows.sort(key=lambda r: r["popularity"], reverse=True)
+
+        total = len(rows)
+        total_pages = (total + SAYFA_BOYUTU - 1) // SAYFA_BOYUTU
+        bas = (page - 1) * SAYFA_BOYUTU
+        sayfa_satirlari = rows[bas : bas + SAYFA_BOYUTU]
+
+        items = [
+            CourseCard(
+                id=r["id"],
+                course_name=r["course_name"],
+                category_id=r["category_id"],
+                language_id=r["language_id"],
+                difficulty_id=r["difficulty_id"],
+                price=r["price"],
+                primary_instructor=r["primary_instructor"],
+                average_rating=r["avg_rating"],
+                review_count=r["review_count"],
+            )
+            for r in sayfa_satirlari
+        ]
+        return CourseCatalogPage(
+            items=items,
+            page=page,
+            page_size=SAYFA_BOYUTU,
+            total=total,
+            total_pages=total_pages,
+            sort=sort,
+        )
+    finally:
+        conn.close()
+
+
+@router.get(
     "/{course_id}",
     response_model=CourseResponse,
     summary="Tek bir kursu getir",
@@ -205,6 +343,96 @@ def kurs_getir(course_id: int):
                 detail=f"{course_id} id'li kurs bulunamadı.",
             )
         return _satiri_cevir(row)
+    finally:
+        conn.close()
+
+
+@router.get(
+    "/{course_id}/detail",
+    response_model=CourseDetail,
+    summary="Kurs detayı (FR5: puan + eğitmenler + yorumlar)",
+    description=(
+        "Kurs detayını döndürür: bilgiler, ortalama puan + değerlendirme sayısı "
+        "(acc2), aktif eğitmenler, aktif değerlendirmeler (acc3).\n\n"
+        "**İş kuralları:**\n"
+        "- [R3] Kurs yoksa **404**.\n"
+        "- [acc4] Pasif kursun detayı, **erişim sahibi olmayan** kullanıcıya "
+        "açılmaz → **404**. Erişim sahibi (`viewer_user_id` satın almış) ise açılır."
+    ),
+    responses={404: {"description": "Kurs bulunamadı veya pasif (erişim yok)."}},
+)
+def kurs_detay(course_id: int, viewer_user_id: int | None = None):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        c = cursor.execute("SELECT * FROM courses WHERE id = ?", (course_id,)).fetchone()
+        if c is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{course_id} id'li kurs bulunamadı.",
+            )
+        # [acc4] Pasif kurs: yalnızca erişim sahibi (satın almış) görebilir.
+        if not c["is_active"]:
+            erisim = (
+                viewer_user_id is not None
+                and kurs_satin_alindi_mi(cursor, viewer_user_id, course_id)
+            )
+            if not erisim:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Kurs pasif; bu kursun detayına erişiminiz yok.",
+                )
+
+        ozet = cursor.execute(
+            "SELECT ROUND(AVG(rating),2) AS avg_rating, COUNT(*) AS n "
+            "FROM reviews WHERE course_id = ? AND deleted_date IS NULL",
+            (course_id,),
+        ).fetchone()
+
+        egitmen_rows = cursor.execute(
+            "SELECT ci.instructor_id, u.full_name, ci.is_primary "
+            "FROM course_instructors ci JOIN users u ON ci.instructor_id = u.id "
+            "WHERE ci.course_id = ? AND ci.deleted_date IS NULL "
+            "ORDER BY ci.is_primary DESC, ci.id",
+            (course_id,),
+        ).fetchall()
+
+        review_rows = cursor.execute(
+            "SELECT id, user_id, rating, comment, created_date "
+            "FROM reviews WHERE course_id = ? AND deleted_date IS NULL ORDER BY id",
+            (course_id,),
+        ).fetchall()
+
+        return CourseDetail(
+            id=c["id"],
+            course_name=c["course_name"],
+            description=c["description"],
+            price=c["price"],
+            category_id=c["category_id"],
+            language_id=c["language_id"],
+            difficulty_id=c["difficulty_id"],
+            is_active=bool(c["is_active"]),
+            average_rating=ozet["avg_rating"],
+            review_count=ozet["n"],
+            instructors=[
+                InstructorBrief(
+                    instructor_id=r["instructor_id"],
+                    full_name=r["full_name"],
+                    is_primary=bool(r["is_primary"]),
+                )
+                for r in egitmen_rows
+            ],
+            reviews=[
+                ReviewBrief(
+                    id=r["id"],
+                    user_id=r["user_id"],
+                    rating=r["rating"],
+                    comment=r["comment"],
+                    created_date=r["created_date"],
+                )
+                for r in review_rows
+            ],
+        )
     finally:
         conn.close()
 

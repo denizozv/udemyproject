@@ -742,20 +742,20 @@ Kurs değerlendirmeleri (puan + yorum). Tüm adresler `/reviews` ile başlar
 (Swagger'da **Reviews**). Aktiflik `deleted_date` boş olmasıyla; cevapta
 `is_active` (türetilmiş) döner.
 
-> **Not (kapsam):** BİZ FR6. **acc2** (yalnızca satın alan değerlendirebilir)
-> `ORDER_ITEMS` gelince eklenecek — şimdilik kontrol edilmiyor. **acc6** (ortalama
-> puana dahil) ileride.
+> **Not (kapsam):** BİZ FR6. **acc2 uygulandı:** yalnızca kursu satın almış
+> (ödemesi COMPLETED) kullanıcı değerlendirebilir → aksi halde **403**. **acc6**
+> (ortalama puana dahil) ileride.
 
 ### 14.1 Değerlendirme yap
 | Özellik | Değer |
 |---|---|
 | **Adres** | `/reviews` |
 | **Metod** | `POST` |
-| **İlgili kural** | [R1] rating 1-5 zorunlu→422 (acc4/5); [R-fk] course/user→400; [R-tek] aktif review varsa→409 (acc3) |
+| **İlgili kural** | [R1] rating 1-5 zorunlu→422 (acc4/5); [R-fk] course/user→400; [R-owned] satın almamış→403 (acc2); [R-tek] aktif review varsa→409 (acc3) |
 
 **Örnek istek:** `{ "course_id": 1, "user_id": 3, "rating": 5, "comment": "Cok faydali bir kurstu" }`
 **Örnek cevap (201):** `{ "id": 1, "course_id": 1, "user_id": 3, "rating": 5, "comment": "Cok faydali bir kurstu", "is_active": true, "created_date": "2024-03-20 18:00:00", "deleted_date": null }`
-**Olası hatalar:** `400` (kurs/kullanıcı yok), `409` (zaten aktif değerlendirme), `422` (rating eksik/aralık dışı).
+**Olası hatalar:** `400` (kurs/kullanıcı yok), `403` (satın almamış), `409` (zaten aktif değerlendirme), `422` (rating eksik/aralık dışı).
 
 ### 14.2 Değerlendirmeleri listele
 | Özellik | Değer |
@@ -832,19 +832,20 @@ ile başlar (Swagger'da **Carts**).
 Sepetteki kurslar. Tüm adresler `/cart-items` ile başlar (Swagger'da **Cart Items**).
 "Sepete ekle" `{user_id, course_id}` alır; kullanıcının sepeti yoksa otomatik oluşur.
 
-> **Not (kapsam):** BİZ FR7. **acc4** (satın alınmış kurs eklenemez) `ORDER_ITEMS`
-> gelince eklenecek. Çıkarma kalıcı silmedir (Excel'de soft-delete yok).
+> **Not (kapsam):** BİZ FR7. **acc4 uygulandı:** zaten satın alınmış (ödemesi
+> COMPLETED) kurs sepete eklenemez → **409**. Çıkarma kalıcı silmedir (Excel'de
+> soft-delete yok).
 
 ### 16.1 Sepete kurs ekle
 | Özellik | Değer |
 |---|---|
 | **Adres** | `/cart-items` |
 | **Metod** | `POST` |
-| **İlgili kural** | [R-user]/[R-course] yok→400; lazy sepet (acc1/acc2); [R-dup] aynı kurs→409 (acc3) |
+| **İlgili kural** | [R-user]/[R-course] yok→400; lazy sepet (acc1/acc2); [R-dup] aynı kurs→409 (acc3); [R-owned] satın alınmış→409 (acc4) |
 
 **Örnek istek:** `{ "user_id": 3, "course_id": 1 }`
 **Örnek cevap (201):** `{ "id": 1, "cart_id": 1, "course_id": 1, "created_date": "2024-03-01 13:05:00" }`
-**Olası hatalar:** `400` (kullanıcı/kurs yok), `409` (kurs sepette zaten var).
+**Olası hatalar:** `400` (kullanıcı/kurs yok), `409` (kurs sepette zaten var **veya** zaten satın alınmış).
 
 ### 16.2 Sepet kalemlerini listele
 | Özellik | Değer |
@@ -994,7 +995,113 @@ Sipariş ödemeleri (sipariş başına bir ödeme). Tüm adresler `/payments` il
 
 ---
 
-## 20. Hata Kodları Sözlüğü
+## 20. CHECKOUT (Sepeti Siparişe Dönüştürme — FR8)
+
+Sepetten tek adımda sipariş + kalemler + ödeme üretir ve sepeti temizler.
+
+### 20.1 Checkout
+| Özellik | Değer |
+|---|---|
+| **Adres** | `/orders/checkout` |
+| **Metod** | `POST` |
+| **Ne işe yarar** | Sepeti siparişe dönüştürür: ORDER + ORDER_ITEM'lar (fiyat snapshot) + PENDING PAYMENT; sepeti temizler. |
+| **İlgili FR** | FR8 acc3/acc4/acc5/acc6/acc7 |
+
+**Örnek istek:**
+```json
+{ "user_id": 3, "payment_method_id": 1, "address": "Istanbul Kadikoy Moda Cad. No:12" }
+```
+**Örnek cevap (201):**
+```json
+{
+  "order": { "id": 1, "user_id": 3, "total_price": 799.4, "created_date": "2024-03-15 14:25:00" },
+  "items": [
+    { "id": 1, "order_id": 1, "course_id": 1, "unit_price": 499.9, "created_date": "2024-03-15 14:25:00" },
+    { "id": 2, "order_id": 1, "course_id": 2, "unit_price": 299.5, "created_date": "2024-03-15 14:25:00" }
+  ],
+  "payment": { "id": 1, "order_id": 1, "payment_method_id": 1, "payment_status_id": 1, "payment_date": "2024-03-15 14:30:00", "address": "Istanbul Kadikoy Moda Cad. No:12", "created_date": "2024-03-15 14:30:00" },
+  "item_count": 2,
+  "total_price": 799.4
+}
+```
+**Olası hatalar:**
+| Kod | Anlamı |
+|---|---|
+| 400 | Geçersiz `user_id` veya pasif/geçersiz `payment_method_id` |
+| 409 | Sepet boş (checkout yapılamaz) veya aktif `PENDING` durumu tanımlı değil |
+| 422 | Doğrulama hatası (`address` boş) |
+
+---
+
+## 21. AUTH — Giriş (FR2)
+
+### 21.1 Login
+| Özellik | Değer |
+|---|---|
+| **Adres** | `/auth/login` |
+| **Metod** | `POST` |
+| **Ne işe yarar** | E-posta + şifre ile giriş; kimlik + aktif roller döner. |
+| **İlgili FR** | FR2 acc1–acc10 |
+
+> **Not:** Token/JWT yoktur; login yalnızca kimliği doğrular ve rolleri döndürür.
+
+**Örnek istek:** `{ "mail": "ahmet@elearning.com", "password": "GizliSifre123", "confirm_reactivation": false }`
+**Örnek cevap (200, başarılı):**
+```json
+{ "success": true, "reactivation_required": false, "user_id": 1, "full_name": "Ahmet Yilmaz", "mail": "ahmet@elearning.com", "roles": ["Student", "Instructor"], "message": "Giriş başarılı." }
+```
+**Örnek cevap (200, silinmiş hesap — onay gerekli):** `{ "success": false, "reactivation_required": true, ... }` → `confirm_reactivation=true` ile tekrar gönderilir.
+**Olası hatalar:** `401` (e-posta/şifre hatalı veya saklama süresi dolmuş hesap), `403` (kara listede).
+
+---
+
+## 22. COURSES — Katalog ve Detay (FR4 / FR5)
+
+### 22.1 Kurs kataloğu (FR4)
+| Özellik | Değer |
+|---|---|
+| **Adres** | `/courses/catalog` |
+| **Metod** | `GET` |
+| **Filtreler** | `q` (kurs adı **veya** eğitmen adı), `category_id`, `language_id`, `difficulty_id`, `min_price`, `max_price` |
+| **Sıralama** | `sort` = `popularity` (varsayılan), `price`, `rating`, `newest` |
+| **Sayfalama** | `page` (1'den), sayfa başına 12 |
+
+**Örnek cevap (200):**
+```json
+{ "items": [ { "id": 1, "course_name": "Spring Boot ile REST API", "category_id": 2, "language_id": 1, "difficulty_id": 2, "price": 499.9, "primary_instructor": "Ahmet Yilmaz", "average_rating": 4.5, "review_count": 12 } ], "page": 1, "page_size": 12, "total": 37, "total_pages": 4, "sort": "popularity" }
+```
+**Olası hatalar:** `400` (min_price > max_price veya geçersiz `sort`).
+
+### 22.2 Kurs detayı (FR5)
+| Özellik | Değer |
+|---|---|
+| **Adres** | `/courses/{id}/detail` (opsiyonel: `?viewer_user_id=`) |
+| **Metod** | `GET` |
+| **Ne işe yarar** | Kurs + ortalama puan + değerlendirme sayısı + aktif eğitmenler + aktif yorumlar. |
+| **İlgili kural** | [R3] yok→404; pasif kurs erişim sahibi olmayana→404 (acc4) |
+
+**Örnek cevap (200):**
+```json
+{ "id": 1, "course_name": "Spring Boot ile REST API", "description": "...", "price": 499.9, "category_id": 2, "language_id": 1, "difficulty_id": 2, "is_active": true, "average_rating": 4.5, "review_count": 12, "instructors": [ { "instructor_id": 1, "full_name": "Ahmet Yilmaz", "is_primary": true } ], "reviews": [ { "id": 1, "user_id": 3, "rating": 5, "comment": "...", "created_date": "..." } ] }
+```
+
+---
+
+## 23. USERS — Sahip Olunan Kurslar (erişim)
+
+### 23.1 Kullanıcının kursları
+| Özellik | Değer |
+|---|---|
+| **Adres** | `/users/{id}/courses` |
+| **Metod** | `GET` |
+| **Ne işe yarar** | Kullanıcının erişim sahibi olduğu (ödemesi COMPLETED) kurslar. |
+| **İlgili kural** | [R3] kullanıcı yok→404; erişim COMPLETED'dan türetilir (FR8 acc8/10/11) |
+
+**Örnek cevap (200):** `[ { "id": 1, "course_name": "Spring Boot ile REST API", "price": 499.9, ... } ]`
+
+---
+
+## 24. Hata Kodları Sözlüğü
 
 İş kuralları eklendikçe aşağıdaki HTTP kodları kullanılacaktır:
 

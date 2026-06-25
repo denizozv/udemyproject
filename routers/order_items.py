@@ -40,6 +40,28 @@ def _course_var_mi(cursor: sqlite3.Cursor, course_id: int) -> bool:
     return cursor.execute("SELECT 1 FROM courses WHERE id = ?", (course_id,)).fetchone() is not None
 
 
+def kurs_satin_alindi_mi(cursor: sqlite3.Cursor, user_id: int, course_id: int) -> bool:
+    """
+    Kullanıcı bu kursu SATIN ALMIŞ mı? (paylaşılan kural — REVIEWS acc2, CART_ITEMS acc4)
+
+    Tanım (analist kararı): Kurs, kullanıcının ödemesi **COMPLETED** olan bir
+    siparişinde (ORDER_ITEM) yer alıyorsa satın alınmış sayılır. PENDING/FAILED/
+    REFUNDED ödemeler erişim/satın alma saymaz (FR8 acc8/acc10/acc11 ile tutarlı).
+    """
+    return (
+        cursor.execute(
+            "SELECT 1 FROM order_items oi "
+            "JOIN orders o ON oi.order_id = o.id "
+            "JOIN payments p ON p.order_id = o.id "
+            "JOIN payment_statuses ps ON p.payment_status_id = ps.id "
+            "WHERE o.user_id = ? AND oi.course_id = ? AND lower(ps.code) = 'completed' "
+            "LIMIT 1",
+            (user_id, course_id),
+        ).fetchone()
+        is not None
+    )
+
+
 @router.post(
     "",
     response_model=OrderItemResponse,

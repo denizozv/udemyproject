@@ -30,6 +30,7 @@ import sqlite3
 from fastapi import APIRouter, HTTPException, status
 
 from database import get_connection
+from models.course import CourseResponse
 from models.user import (
     AccountDeleteRequest,
     CleanupReport,
@@ -399,6 +400,56 @@ def hesabi_kendim_sil(user_id: int, payload: AccountDeleteRequest):
         conn.close()
 
 
+@router.get(
+    "/{user_id}/courses",
+    response_model=list[CourseResponse],
+    summary="Kullanıcının sahip olduğu (satın aldığı) kurslar",
+    description=(
+        "Kullanıcının **erişim sahibi olduğu** kursları listeler. Erişim, ödemesi "
+        "**COMPLETED** olan siparişlerden türetilir (FR8 acc8). İade edilen "
+        "(REFUNDED) veya bekleyen (PENDING) ödemeler erişim saymaz (acc10/acc11).\n\n"
+        "**İş kuralı:** [R3] Kullanıcı yoksa **404**."
+    ),
+    responses={404: {"description": "Kullanıcı bulunamadı."}},
+)
+def kullanici_kurslari(user_id: int):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        if cursor.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{user_id} id'li kullanıcı bulunamadı.",
+            )
+        rows = cursor.execute(
+            "SELECT DISTINCT c.* FROM courses c "
+            "JOIN order_items oi ON oi.course_id = c.id "
+            "JOIN orders o ON oi.order_id = o.id "
+            "JOIN payments p ON p.order_id = o.id "
+            "JOIN payment_statuses ps ON p.payment_status_id = ps.id "
+            "WHERE o.user_id = ? AND lower(ps.code) = 'completed' "
+            "ORDER BY c.id",
+            (user_id,),
+        ).fetchall()
+        return [
+            CourseResponse(
+                id=r["id"],
+                category_id=r["category_id"],
+                language_id=r["language_id"],
+                course_name=r["course_name"],
+                price=r["price"],
+                description=r["description"],
+                difficulty_id=r["difficulty_id"],
+                is_active=bool(r["is_active"]),
+                created_date=r["created_date"],
+                deleted_date=r["deleted_date"],
+            )
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
 @router.post(
     "/cleanup-expired",
     response_model=CleanupReport,
@@ -411,8 +462,12 @@ def hesabi_kendim_sil(user_id: int, payload: AccountDeleteRequest):
         "etkilenecekleri raporlar. Gerçekten silmek için `dry_run=false` gönderin.\n\n"
         "**Atlama:** Bir hesap başka kayıtlarda `banned_by` ile referanslıysa "
         "(başkalarını yasaklamış bir admin gibi) silinmez; raporda `skipped` altında listelenir.\n\n"
-        "_Not: Orders/Reviews/Course_Instructors tabloları eklendiğinde bu temizlik "
-        "onları da dikkate alacak şekilde genişletilmelidir._"
+        "Silinen kullanıcının bağlı tüm kayıtları (carts, cart_items, orders, "
+        "order_items, payments, reviews, course_instructors, user_roles, blacklist) "
+        "da aynı işlemde silinir.\n\n"
+        "_Kapsam notu: BİZ FR3 acc4 'kalıcı silme' der; bu yüzden sipariş/ödeme "
+        "kayıtları da silinir. Mali kayıtların korunması (anonimleştirme) tercih "
+        "edilirse bu davranış değiştirilebilir._"
     ),
 )
 def saklamasi_dolanlari_temizle(dry_run: bool = True):
@@ -449,9 +504,30 @@ def saklamasi_dolanlari_temizle(dry_run: bool = True):
 
             silinecek.append(uid)
             if not dry_run:
-                # Önce bağlı kayıtlar (FK), sonra kullanıcı silinir.
+                # Bağlı kayıtlar FK sırasına göre (çocuktan ebeveyne) silinir,
+                # en sonda kullanıcı. Böylece foreign_keys=ON ile çakışma olmaz.
+                # 1) Sepet: önce kalemler, sonra sepet.
+                cursor.execute(
+                    "DELETE FROM cart_items WHERE cart_id IN (SELECT id FROM carts WHERE user_id = ?)",
+                    (uid,),
+                )
+                cursor.execute("DELETE FROM carts WHERE user_id = ?", (uid,))
+                # 2) Siparişler: önce order_items ve payments, sonra orders.
+                cursor.execute(
+                    "DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE user_id = ?)",
+                    (uid,),
+                )
+                cursor.execute(
+                    "DELETE FROM payments WHERE order_id IN (SELECT id FROM orders WHERE user_id = ?)",
+                    (uid,),
+                )
+                cursor.execute("DELETE FROM orders WHERE user_id = ?", (uid,))
+                # 3) Değerlendirmeler, eğitmenlikler, roller, kara liste (user_id).
+                cursor.execute("DELETE FROM reviews WHERE user_id = ?", (uid,))
+                cursor.execute("DELETE FROM course_instructors WHERE instructor_id = ?", (uid,))
                 cursor.execute("DELETE FROM user_roles WHERE user_id = ?", (uid,))
                 cursor.execute("DELETE FROM blacklist WHERE user_id = ?", (uid,))
+                # 4) Son olarak kullanıcı.
                 cursor.execute("DELETE FROM users WHERE id = ?", (uid,))
 
         if not dry_run:

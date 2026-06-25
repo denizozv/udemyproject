@@ -72,6 +72,7 @@ def health_check():
 #   from routers import <entity>         # router dosyasını içe aktar
 #   app.include_router(<entity>.router)  # endpoint'lerini uygulamaya bağla
 
+from routers import auth  # AUTH (login) router'ı (Adım 24)
 from routers import blacklist  # BLACKLIST router'ı (Adım 9)
 from routers import cart_items  # CART_ITEMS router'ı (Adım 16)
 from routers import carts  # CARTS router'ı (Adım 15)
@@ -107,3 +108,4 @@ app.include_router(cart_items.router)
 app.include_router(orders.router)
 app.include_router(order_items.router)
 app.include_router(payments.router)
+app.include_router(auth.router)

@@ -1143,3 +1143,78 @@ Sepetten tek adımda sipariş + kalemler + ödeme üretir ve sepeti temizler.
 | 404 | Not Found | İşaret edilen kayıt bulunamadı (örn. olmayan bir FK) |
 | 409 | Conflict | Mükerrer kayıt / kural çakışması (örn. aynı isim+eğitmen+fiyat) |
 | 422 | Unprocessable Entity | Doğrulama (validation) hatası (Pydantic) |
+
+---
+
+## 25. Postman ile Test
+
+Tüm uçları hazır gövdeler ve otomatik testlerle denemek için proje kökünde
+**`udemy.postman_collection.json`** (Postman Collection v2.1) dosyası bulunur.
+
+### İçe aktarma
+1. Postman'i açın → **Import** → `udemy.postman_collection.json` dosyasını seçin.
+2. Koleksiyon adı: **"E-Learning API (Udemy benzeri)"**.
+
+### Koleksiyon değişkenleri
+| Değişken | Varsayılan | Açıklama |
+|---|---|---|
+| `base_url` | `http://127.0.0.1:8000` | API kök adresi (port değişirse burayı güncelleyin) |
+| `token` | _(boş)_ | Login sonrası **otomatik** doldurulur |
+| `hp_*`, `*_id` | _(boş)_ | Happy Path / klasör akışlarında otomatik yakalanan id'ler |
+
+### Önce: sunucu + demo veri
+```bash
+pip install -r requirements.txt
+py seed.py                  # demo veri (şifre: Sifre1234)
+uvicorn main:app --reload
+```
+
+### Token (yetkilendirme) nasıl alınır
+**Auth → "Login (admin - ahmet)"** isteğini çalıştırın. İsteğin **Tests**
+script'i dönen token'ı otomatik olarak `{{token}}` değişkenine yazar. Admin /
+Instructor gerektiren tüm uçlar `Authorization: Bearer {{token}}` header'ını
+taşıdığından, login sonrası bu uçlar çalışır hale gelir.
+> Demo admin: `ahmet@elearning.com` / `Sifre1234` (Admin **ve** Instructor rolü).
+
+### Klasör yapısı
+Her endpoint grubu bir klasördür (Auth, Roles, Languages, Difficulty Levels,
+Payment Methods/Statuses, Categories, Users, User Roles, Blacklist, Courses,
+Course Instructors, Reviews, Carts, Cart Items, Orders, Order Items, Payments,
+Catalog & Detail). Her klasör; pozitif (200/201) ve negatif
+(400/401/403/404/409/422) senaryoları, gövde örnekleriyle ve `pm.test`
+status-kod doğrulamalarıyla içerir.
+
+> **Sıra önemli:** Klasörler, oluşturulan kaydın id'sini sonraki isteklere
+> aktardığı için (örn. `{{course_id}}`) **Collection Runner** ile yukarıdan
+> aşağı çalıştırılmak üzere tasarlanmıştır. Tek tek çalıştırırken önce ilgili
+> "oluştur" isteğini tetikleyin.
+
+### Happy Path (uçtan uca senaryo)
+**Happy Path** klasörünü Collection Runner ile sırayla çalıştırın:
+`register → login → sepete ekle → checkout → ödemeyi COMPLETED yap →
+değerlendir → sahip olunan kurslar`. Her adım gerekli değişkenleri
+(`{{hp_email}}`, `{{hp_user_id}}`, `{{hp_order_id}}`, `{{hp_payment_id}}`)
+otomatik bir sonraki adıma aktarır; benzersiz e-posta her çalıştırmada
+otomatik üretilir.
+
+### Analist Testleri (iş kuralı kanıtlayan senaryolar)
+**Analist Testleri** ana klasörü, status kodunun yanı sıra **gövde/iş kuralını**
+da `pm.test` ile doğrulayan 5 uçtan uca senaryo içerir. Senaryolar **taze seed**
+üzerinde deterministiktir: önce `db.sqlite`'ı silip `py seed.py` ile yeniden
+yükleyin, sonra her alt klasörü **Collection Runner** ile **sırayla** çalıştırın.
+
+| # | Senaryo | Kanıtladığı FR/ACC | Özet doğrulama |
+|---|---|---|---|
+| 1 | Satın alma → erişim → değerlendirme | FR7 + FR8 (acc6/7/8) + FR6 (acc2) | Kayıtta şifre dönmez; satın almadan review→403; checkout'ta `total_price = Σ unit_price` ve ödeme PENDING başlar; COMPLETED sonrası sepet boşalır; satın alınca review→201 |
+| 2 | Ödeme başarısız → sepet korunur | FR8 (acc9) | FAILED ödeme sonrası sepet **dolu** kalır (length > 0) |
+| 3 | Mükerrer değerlendirme engeli | FR6 (acc3) | Aynı kullanıcı+kurs ikinci review→409; aktif review sayısı tam **1** |
+| 4 | Kullanımdaki kategori pasife alınamaz | FR10 (acc6) | Aktif kursun kategorisini deactivate→409 |
+| 5 | Yetki ve sahiplik zinciri | FR6 (acc7) + auth | Sahibi olmayan (admin) review güncelleyemez→403; token'sız→401; admin başkasının review'unu silebilir→200 |
+
+> **Sıra önemli:** Senaryo 3, Senaryo 1'in oluşturduğu kullanıcıya (`{{s1_user}}`)
+> ve aktif değerlendirmesine dayanır; bu yüzden Senaryo 1'den **sonra** çalışmalıdır.
+> Senaryo 4 ve 5 admin token'ı gerektirir (kendi içlerinde login adımıyla token'ı
+> `{{token}}`'a yazarlar).
+
+**Bu klasörlerin eklediği değişkenler:** `s1_user`, `s1_payment`, `s2_user`,
+`s2_payment`, `s4_category` (hepsi otomatik doldurulur; elle id girmenize gerek yoktur).

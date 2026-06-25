@@ -1194,3 +1194,37 @@ sahip düzenler/başkası 403/admin siler ✓.
 - **thumbnail_url** ve CARTS.is_active gibi Excel'de olmayan kolonlar (en baştaki
   karar gereği eklenmedi).
 - Token **süre dolumu (expiry)** yok (basit oturum); istenirse eklenebilir.
+
+---
+
+### Adım 25 — Postman koleksiyonu + Analist test senaryoları
+
+Yeni entity/endpoint eklenmedi; mevcut API için **içe aktarmaya hazır bir Postman
+koleksiyonu** (`udemy.postman_collection.json`, Collection v2.1) üretildi.
+
+**1) Yapı:** Her endpoint grubu bir klasör (Auth, Roles, …, Catalog & Detail).
+Koleksiyon değişkenleri: `base_url`, `token` (login Tests script'i otomatik yazar)
+ve klasör akışlarında yakalanan `*_id` değişkenleri. Admin/Instructor gerektiren
+uçlar `Authorization: Bearer {{token}}` taşır. Her istekte `pm.test` ile pozitif
+(200/201) ve negatif (400/401/403/404/409/422) status doğrulaması var. Uçtan uca
+örnek için **Happy Path** klasörü (register→login→sepet→checkout→COMPLETED→review).
+
+**2) "Analist Testleri" klasörü (iş kuralı kanıtlayan senaryolar):** Status'ün
+yanı sıra **gövde/iş kuralını** da doğrulayan 5 alt senaryo. **Taze seed** üzerinde
+(`db.sqlite` silinip `py seed.py`) deterministik; Collection Runner ile sırayla
+çalıştırılır. Değişkenler `pm.collection.variables` ile taşınır (elle id yok),
+benzersizlik için e-postada `{{$timestamp}}`.
+
+  | Senaryo | FR/ACC | Anahtar assertion |
+  |---|---|---|
+  | 1) Satın alma → erişim → değerlendirme | FR7 + FR8 acc6/7/8 + FR6 acc2 | register cevabında `password`/`password_hash` yok; satın almadan review→403; checkout'ta `total_price == Σ items.unit_price` ve `payment.payment_status_id == 1`; COMPLETED sonrası `cart-items` boş; satın alınca review→201 |
+  | 2) Ödeme başarısız → sepet korunur | FR8 acc9 | FAILED sonrası `cart-items` length > 0 |
+  | 3) Mükerrer değerlendirme engeli | FR6 acc3 | ikinci review→409; aktif review sayısı tam 1 (Senaryo 1'e bağlı, `{{s1_user}}`) |
+  | 4) Kullanımdaki kategori pasife alınamaz | FR10 acc6 | kurs 1'in `category_id`'si → deactivate→409 |
+  | 5) Yetki ve sahiplik zinciri | FR6 acc7 + auth | admin (sahibi değil) PUT→403; token'sız PUT→401; admin DELETE→200 |
+
+  Eklenen koleksiyon değişkenleri: `s1_user`, `s1_payment`, `s2_user`,
+  `s2_payment`, `s4_category`.
+
+**3) Doküman:** `API_KULLANIM.md` → "25. Postman ile Test" bölümü (içe aktarma,
+token alma, Happy Path ve Analist Testleri tablosu) güncellendi.

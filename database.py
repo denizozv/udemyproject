@@ -31,7 +31,9 @@ def get_connection() -> sqlite3.Connection:
     Böylece bağlantılar açık kalıp birbirine karışmaz.
     """
     # sqlite3.connect: db.sqlite dosyasına bağlanır. Dosya yoksa otomatik oluşturulur.
-    connection = sqlite3.connect(DB_PATH)
+    # timeout=30: DB başka bir bağlantı tarafından kilitliyse, hemen hata vermek
+    # yerine 30 saniyeye kadar kilidin açılmasını bekler.
+    connection = sqlite3.connect(DB_PATH, timeout=30.0)
 
     # row_factory = sqlite3.Row: Sorgu sonuçlarına kolon ADIYLA erişmeyi sağlar.
     # Örn: row["name"]  (sadece row[0] değil). Okunabilirliği artırır.
@@ -41,6 +43,17 @@ def get_connection() -> sqlite3.Connection:
     # varsayılan olarak KAPALIDIR. Bu satır onları açar; böylece ilişki
     # bütünlüğü (referential integrity) veritabanı seviyesinde de korunur.
     connection.execute("PRAGMA foreign_keys = ON;")
+
+    # PRAGMA busy_timeout: Yazma kilidi başkasındaysa 30sn bekle (timeout ile aynı
+    # amaç; PRAGMA seviyesinde de garanti altına alır). "database is locked"
+    # hatalarını büyük ölçüde önler.
+    connection.execute("PRAGMA busy_timeout = 30000;")
+
+    # PRAGMA journal_mode = WAL: Write-Ahead Logging. Okuyucular ile tek bir
+    # yazıcının BİRBİRİNİ KİLİTLEMEDEN aynı anda çalışmasına izin verir. FastAPI
+    # senkron uç noktaları bir thread havuzunda çalıştığından bu, eşzamanlı
+    # isteklerde kilitlenmeyi önler. (Ek bağımlılık yok; saf sqlite3 ayarıdır.)
+    connection.execute("PRAGMA journal_mode = WAL;")
 
     return connection
 

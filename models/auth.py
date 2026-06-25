@@ -47,6 +47,11 @@ class LoginResult(BaseModel):
     full_name: str | None = Field(..., examples=["Ahmet Yilmaz"])
     mail: str | None = Field(..., examples=["ahmet@elearning.com"])
     roles: list[str] = Field(..., description="Kullanıcının aktif rolleri (FR2 acc10).", examples=[["Student", "Instructor"]])
+    token: str | None = Field(
+        default=None,
+        description="Bearer token. Sonraki isteklerde 'Authorization: Bearer <token>' olarak gönderilir. (Başarısız/onay bekleyen girişte null.)",
+        examples=["nE3v...QwZ"],
+    )
     message: str = Field(..., examples=["Giriş başarılı."])
 
     model_config = ConfigDict(

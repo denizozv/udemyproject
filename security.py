@@ -16,6 +16,7 @@ Saklanan format (tek bir metin):
 import hashlib
 import hmac
 import os
+import secrets
 
 # Hash parametreleri.
 _ALGORITHM = "sha256"     # özet (digest) algoritması
@@ -36,6 +37,15 @@ def hash_password(plain_password: str) -> str:
     )
     # Salt ve hash'i hex metne çevirip parçaları '$' ile birleştir.
     return f"pbkdf2_{_ALGORITHM}${_ITERATIONS}${salt.hex()}${derived.hex()}"
+
+
+def generate_token() -> str:
+    """
+    Login'de üretilen rastgele, tahmin edilemez (opak) bearer token döndürür.
+    secrets.token_urlsafe kriptografik olarak güçlüdür; ~43 karakterlik URL-güvenli
+    bir metin verir. Token veritabanındaki sessions tablosunda saklanır.
+    """
+    return secrets.token_urlsafe(32)
 
 
 def verify_password(plain_password: str, stored_hash: str) -> bool:

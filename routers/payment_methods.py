@@ -14,8 +14,9 @@ Uygulanan iş kuralları (kaynak notu):
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from auth_deps import rol_gerektir
 from database import get_connection
 from models.payment_method import (
     PaymentMethodCreate,
@@ -39,6 +40,7 @@ def _satiri_cevir(row: sqlite3.Row) -> PaymentMethodResponse:
 
 @router.post(
     "",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=PaymentMethodResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Yeni ödeme yöntemi oluştur",
@@ -140,6 +142,7 @@ def yontem_getir(method_id: int):
 
 @router.put(
     "/{method_id}",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=PaymentMethodResponse,
     summary="Ödeme yöntemini güncelle",
     description=(
@@ -194,6 +197,7 @@ def yontem_guncelle(method_id: int, payload: PaymentMethodUpdate):
 
 @router.patch(
     "/{method_id}/deactivate",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=PaymentMethodResponse,
     summary="Ödeme yöntemini pasife al",
     description=(
@@ -231,6 +235,7 @@ def yontem_pasiflestir(method_id: int):
 
 @router.patch(
     "/{method_id}/activate",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=PaymentMethodResponse,
     summary="Ödeme yöntemini yeniden aktifleştir",
     description="Pasif bir kaydı tekrar aktif eder (is_active=1).\n\n**İş kuralı:** [R3] Kayıt yoksa **404**.",

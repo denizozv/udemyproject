@@ -13,8 +13,9 @@ Uygulanan iş kuralları (kaynak notu):
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from auth_deps import rol_gerektir
 from database import get_connection
 from models.language import LanguageCreate, LanguageResponse, LanguageUpdate
 
@@ -33,6 +34,7 @@ def _satiri_language_cevir(row: sqlite3.Row) -> LanguageResponse:
 
 @router.post(
     "",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=LanguageResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Yeni dil oluştur",
@@ -134,6 +136,7 @@ def dil_getir(language_id: int):
 
 @router.put(
     "/{language_id}",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=LanguageResponse,
     summary="Dili güncelle",
     description=(
@@ -190,6 +193,7 @@ def dil_guncelle(language_id: int, payload: LanguageUpdate):
 
 @router.patch(
     "/{language_id}/deactivate",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=LanguageResponse,
     summary="Dili pasife al",
     description=(
@@ -239,6 +243,7 @@ def dil_pasiflestir(language_id: int):
 
 @router.patch(
     "/{language_id}/activate",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=LanguageResponse,
     summary="Dili yeniden aktifleştir",
     description="Pasif bir dili tekrar aktif eder (is_active=1).\n\n**İş kuralı:** [R3] Dil yoksa **404**.",

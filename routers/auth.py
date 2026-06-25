@@ -20,11 +20,11 @@ KAPSAM NOTU: Token/JWT ve hesap kilidi (CLAUDE acc11) bu sürümde YOKTUR.
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, status
 
 from database import get_connection
 from models.auth import LoginRequest, LoginResult
-from security import verify_password
+from security import generate_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -126,8 +126,13 @@ def login(payload: LoginRequest):
             )
             conn.commit()
 
-        # acc9/acc10: başarılı giriş -> aktif roller.
+        # acc9/acc10: başarılı giriş -> aktif roller + oturum (token) oluştur.
         roller = _aktif_roller(cursor, user["id"])
+        token = generate_token()
+        cursor.execute(
+            "INSERT INTO sessions (token, user_id) VALUES (?, ?)", (token, user["id"])
+        )
+        conn.commit()
         return LoginResult(
             success=True,
             reactivation_required=False,
@@ -135,7 +140,35 @@ def login(payload: LoginRequest):
             full_name=user["full_name"],
             mail=user["mail"],
             roles=roller,
+            token=token,
             message="Giriş başarılı.",
         )
+    finally:
+        conn.close()
+
+
+@router.post(
+    "/logout",
+    summary="Çıkış (logout)",
+    description=(
+        "Gönderilen bearer token'a ait oturumu sonlandırır (sessions kaydını siler).\n\n"
+        "Token `Authorization: Bearer <token>` başlığında gönderilir. Geçersiz/eksik "
+        "token'da da 200 döner (idempotent)."
+    ),
+)
+def logout(authorization: str | None = Header(default=None)):
+    # 'Authorization: Bearer <token>' -> token
+    token = None
+    if authorization:
+        parcalar = authorization.split(" ", 1)
+        if len(parcalar) == 2 and parcalar[0].lower() == "bearer":
+            token = parcalar[1].strip() or None
+
+    conn = get_connection()
+    try:
+        if token:
+            conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+            conn.commit()
+        return {"message": "Çıkış yapıldı."}
     finally:
         conn.close()

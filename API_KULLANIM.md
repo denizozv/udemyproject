@@ -19,6 +19,16 @@ Proje klasöründe (`udemyproject/`) terminal açıp:
 pip install -r requirements.txt
 ```
 
+### Örnek veri yükleme (önerilir — opsiyonel)
+Uygulamayı dolu bir veriyle denemek için (Excel'deki örnek kayıtlar):
+
+```bash
+py seed.py        # veya: python seed.py
+```
+- Idempotent'tir: veri varsa atlar. Sıfırdan yüklemek için önce `db.sqlite`'ı silin.
+- **Demo şifresi:** tüm örnek kullanıcılar `Sifre1234`. Örn. giriş:
+  `ahmet@elearning.com` / `Sifre1234` (Admin + Instructor).
+
 ### Çalıştırma
 Proje klasöründeyken:
 
@@ -1033,25 +1043,42 @@ Sepetten tek adımda sipariş + kalemler + ödeme üretir ve sepeti temizler.
 
 ---
 
-## 21. AUTH — Giriş (FR2)
+## 21. AUTH — Giriş / Yetkilendirme (FR2)
+
+> **Yetkilendirme nasıl çalışır:** Login başarılı olunca bir **token** döner.
+> Korumalı işlemlerde bu token `Authorization: Bearer <token>` başlığıyla gönderilir.
+> (JWT değil; sunucuda `sessions` tablosunda tutulan opak token.)
+>
+> **Hangi işlemler korumalı?**
+> - **Admin** gerekli: rol/dil/zorluk/ödeme yöntemi/ödeme durumu/kategori **yazma**
+>   işlemleri (FR10), kullanıcı rolleri (FR11) ve kara liste (FR12) tüm işlemleri,
+>   `users/cleanup-expired`.
+> - **Instructor** gerekli (+ kendi kursu): kurs ekleme/güncelleme/pasife alma ve
+>   kurs-eğitmen yönetimi (FR9).
+> - **Herkese açık:** register, login, kurs kataloğu/detayı, lookup okumaları.
+> - Yetkisiz erişim: token yok/geçersiz → **401**; rol yetersiz → **403**.
 
 ### 21.1 Login
 | Özellik | Değer |
 |---|---|
 | **Adres** | `/auth/login` |
 | **Metod** | `POST` |
-| **Ne işe yarar** | E-posta + şifre ile giriş; kimlik + aktif roller döner. |
 | **İlgili FR** | FR2 acc1–acc10 |
 
-> **Not:** Token/JWT yoktur; login yalnızca kimliği doğrular ve rolleri döndürür.
-
-**Örnek istek:** `{ "mail": "ahmet@elearning.com", "password": "GizliSifre123", "confirm_reactivation": false }`
+**Örnek istek:** `{ "mail": "ahmet@elearning.com", "password": "Sifre1234", "confirm_reactivation": false }`
 **Örnek cevap (200, başarılı):**
 ```json
-{ "success": true, "reactivation_required": false, "user_id": 1, "full_name": "Ahmet Yilmaz", "mail": "ahmet@elearning.com", "roles": ["Student", "Instructor"], "message": "Giriş başarılı." }
+{ "success": true, "reactivation_required": false, "user_id": 1, "full_name": "Ahmet Yilmaz", "mail": "ahmet@elearning.com", "roles": ["Admin", "Instructor"], "token": "nE3v...QwZ", "message": "Giriş başarılı." }
 ```
-**Örnek cevap (200, silinmiş hesap — onay gerekli):** `{ "success": false, "reactivation_required": true, ... }` → `confirm_reactivation=true` ile tekrar gönderilir.
+**Örnek cevap (200, silinmiş hesap — onay gerekli):** `{ "success": false, "reactivation_required": true, "token": null, ... }` → `confirm_reactivation=true` ile tekrar gönderilir.
 **Olası hatalar:** `401` (e-posta/şifre hatalı veya saklama süresi dolmuş hesap), `403` (kara listede).
+
+### 21.2 Logout
+| Özellik | Değer |
+|---|---|
+| **Adres** | `/auth/logout` |
+| **Metod** | `POST` |
+| **Ne işe yarar** | `Authorization: Bearer <token>` ile gelen oturumu sonlandırır (idempotent). |
 
 ---
 

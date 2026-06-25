@@ -26,7 +26,9 @@
 udemyproject/
 ├── main.py                    # Giriş noktası; FastAPI'yi kurar, router'ları toplar
 ├── database.py                # SQLite bağlantısı + tablo şemaları (TABLE_SCHEMAS) + init_db
-├── security.py                # Şifre hash/verify (PBKDF2, ek bağımlılık yok)
+├── security.py                # Şifre hash/verify + token üretimi (PBKDF2, ek bağımlılık yok)
+├── auth_deps.py               # Yetki bağımlılıkları: aktif_kullanici, rol_gerektir
+├── seed.py                    # Örnek (demo) veri yükleyici — `py seed.py`
 ├── db.sqlite                  # SQLite veritabanı dosyası (uygulama ilk çalışınca otomatik oluşur)
 ├── requirements.txt           # Python bağımlılıkları (fastapi, uvicorn)
 ├── models/                    # Pydantic istek/cevap modelleri (entity bazlı)
@@ -1110,11 +1112,69 @@ login doğru/yanlış→401/banlı→403/roller/reaktivasyon akışı ✓; clean
 17 tablo + CHECKOUT + satın alma kuralları + erişim + FR4/FR5 + FR2 login +
 genişletilmiş cleanup. Uygulama bütün olarak hatasız yükleniyor.
 
+### Adım 23 — Örnek (demo) veri: `seed.py`
+
+Yeni gelen kişinin uygulamayı açar açmaz dolu bir sistemde Swagger'dan deneme
+yapabilmesi için Excel'deki örnek kayıtları yükleyen bir script eklendi.
+
+- **Çalıştırma:** `py seed.py` (veya `python seed.py`).
+- **Idempotent:** `roles` doluysa hiçbir şey yapmaz. Sıfırlamak için `db.sqlite`
+  silinip tekrar çalıştırılır.
+- **İçerik:** 17 tablonun tamamına Excel'deki örnek veriler (3 rol, 6 kullanıcı,
+  kategoriler, diller, 4 kurs, eğitmen atamaları, yorumlar, sepetler, 2 sipariş +
+  kalemleri + ödemeleri, kara liste) birebir id/tarihlerle eklenir.
+- **Şifreler:** Excel'deki bcrypt hash'leri kullanılamadığından (farklı algoritma)
+  tüm demo kullanıcılara ortak **`Sifre1234`** atanır ve PBKDF2 ile hash'lenir.
+  Örn. giriş: `ahmet@elearning.com` / `Sifre1234` (Admin+Instructor).
+- **Doğrulama:** Yüklenen sayılar Excel ile eşleşti; demo login ve katalog
+  (React 4.5, Spring Boot 5.0 ortalama puan) çalışıyor; ikinci çalıştırma atlandı.
+
+### Adım 24 — Kimlik doğrulama + rol-bazlı yetkilendirme (token)
+
+> **Analist kararı:** JWT yerine **basit, opak bearer token + `sessions` tablosu**
+> (ek bağımlılık yok; yasaklamada anında iptal edilebilir — FR12 acc9).
+
+**1) `sessions` tablosu** (database.py) — auth destek tablosu (Excel'de yok; domain
+entity'si değil). `token` (UNIQUE), `user_id`, `created_date`.
+
+**2) `security.py` → `generate_token()`** — `secrets.token_urlsafe(32)` ile rastgele token.
+
+**3) `auth_deps.py` (YENİ):**
+- `aktif_kullanici(authorization)` — `Bearer <token>` başlığını çözer, oturumu
+  bulur, hesap aktifliğini + geçerli kara liste yasağını kontrol eder (yasaklıysa
+  oturumları siler + 403 — FR12 acc9), `{id, full_name, mail, roles}` döndürür.
+- `rol_gerektir(*roller)` — belirtilen rollerden en az birini zorunlu kılan bağımlılık.
+
+**4) `routers/auth.py`:** `login` artık başarıda **token** üretip `sessions`'a yazar
+ve döndürür. `POST /auth/logout` oturumu siler.
+
+**5) Guard'ların uygulanışı (FR'ye göre):**
+- **Router seviyesinde Admin** (okuma dahil): `user_roles` (FR11), `blacklist` (FR12).
+- **Yazma uçlarında Admin** (okuma herkese açık): tüm lookup'lar — roles, languages,
+  difficulty_levels, payment_methods, payment_statuses, categories (FR10 acc1) +
+  `users/cleanup-expired`.
+- **Instructor + sahiplik** (FR9): kurs oluşturma (oluşturan otomatik primary),
+  güncelleme/pasife alma/aktifleştirme yalnızca **kursun aktif eğitmeni** tarafından;
+  course_instructors ekleme/çıkarma/primary değişimi yalnızca kursun mevcut eğitmeni.
+- **Public kalanlar:** register, login, kurs kataloğu/detayı (FR4/FR5), lookup okumaları.
+
+**Kullanım:** `POST /auth/login` → `token`. Sonraki isteklerde
+`Authorization: Bearer <token>` başlığı gönderilir.
+
+#### Yapılan test (doğrulama)
+Token login/logout ✓, geçersiz token→401 ✓, rol_gerektir Admin/Student ayrımı ✓,
+banlı kullanıcı login→403 + oturum iptali ✓; uygulama (openapi) hatasız kuruluyor ✓;
+kurs sahiplik: sahip düzenler/pasife alır ✓, başkası→403 ✓; eğitmen ekleme sahiplik ✓.
+
+> **NOT (test sınırı):** Ortamda `httpx` olmadığı için guard'lar HTTP katmanında
+> TestClient ile değil; bağımlılık fonksiyonları (`rol_gerektir`, `aktif_kullanici`)
+> izole test edilip + uygulamanın dependency grafiği (openapi) başarıyla kurularak
+> doğrulandı. Sahiplik kuralları, endpoint fonksiyonları `kullanici` ile doğrudan
+> çağrılarak test edildi.
+
 ### Bilinçli olarak KAPSAM DIŞI bırakılanlar
-- **Token/JWT ve endpoint-bazlı yetkilendirme**: login kimlik + rol döndürür ama
-  her endpoint'in çağıranı doğrulaması/yetki kontrolü uygulanmadı (büyük ve ayrı
-  bir mimari konu; analistle ayrıca planlanmalı).
-- **Hesap kilidi** (5 hatalı giriş — CLAUDE acc11), **anonimleştirme batch**'i
+- **Hesap kilidi** (5 hatalı giriş — CLAUDE acc11) yok; **anonimleştirme batch**'i
   yerine doğrudan kalıcı silme (BİZ FR3 acc4 tercih edildi).
 - **thumbnail_url** ve CARTS.is_active gibi Excel'de olmayan kolonlar (en baştaki
   karar gereği eklenmedi).
+- Token **süre dolumu (expiry)** yok (basit oturum); istenirse eklenebilir.

@@ -20,8 +20,9 @@ Uygulanan iş kuralları (kaynak notu):
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from auth_deps import rol_gerektir
 from database import get_connection
 from models.role import RoleCreate, RoleResponse, RoleUpdate
 
@@ -46,6 +47,7 @@ def _satiri_role_cevir(row: sqlite3.Row) -> RoleResponse:
 
 @router.post(
     "",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=RoleResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Yeni rol oluştur",
@@ -143,6 +145,7 @@ def rol_getir(role_id: int):
 
 @router.put(
     "/{role_id}",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=RoleResponse,
     summary="Rolü güncelle",
     description=(
@@ -195,6 +198,7 @@ def rol_guncelle(role_id: int, payload: RoleUpdate):
 
 @router.patch(
     "/{role_id}/deactivate",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=RoleResponse,
     summary="Rolü pasife al",
     description=(
@@ -228,6 +232,7 @@ def rol_pasiflestir(role_id: int):
 
 @router.patch(
     "/{role_id}/activate",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=RoleResponse,
     summary="Rolü yeniden aktifleştir",
     description="Pasif bir rolü tekrar aktif eder (is_active=1).\n\n**İş kuralı:** [R3] Rol yoksa **404**.",

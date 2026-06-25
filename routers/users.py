@@ -27,8 +27,9 @@ ERTELENEN:
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from auth_deps import rol_gerektir
 from database import get_connection
 from models.course import CourseResponse
 from models.user import (
@@ -452,6 +453,7 @@ def kullanici_kurslari(user_id: int):
 
 @router.post(
     "/cleanup-expired",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=CleanupReport,
     summary="Saklama süresi dolan hesapları temizle (FR3 acc4)",
     description=(

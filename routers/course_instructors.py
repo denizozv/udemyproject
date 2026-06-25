@@ -15,8 +15,9 @@ Uygulanan iş kuralları (BİZ FR9 + analist kararları):
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from auth_deps import rol_gerektir
 from database import get_connection
 from models.course_instructor import CourseInstructorCreate, CourseInstructorResponse
 
@@ -53,6 +54,18 @@ def _instructor_rolu_var_mi(cursor: sqlite3.Cursor, user_id: int) -> bool:
             "WHERE ur.user_id = ? AND ur.deleted_date IS NULL "
             "  AND r.is_active = 1 AND lower(r.name) = 'instructor'",
             (user_id,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _kurs_egitmeni_mi(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> bool:
+    """Kullanıcı bu kursun AKTİF eğitmeni mi? (FR9 acc6 — yalnızca kendi kursunu yönetebilir)"""
+    return (
+        cursor.execute(
+            "SELECT 1 FROM course_instructors "
+            "WHERE course_id = ? AND instructor_id = ? AND deleted_date IS NULL LIMIT 1",
+            (course_id, user_id),
         ).fetchone()
         is not None
     )
@@ -103,7 +116,10 @@ def _aktif_primary_var_mi(cursor: sqlite3.Cursor, course_id: int, haric_id: int 
         409: {"description": "Zaten atanmış veya kursta zaten bir primary var."},
     },
 )
-def egitmen_ata(payload: CourseInstructorCreate):
+def egitmen_ata(
+    payload: CourseInstructorCreate,
+    kullanici: dict = Depends(rol_gerektir("Instructor")),
+):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -113,6 +129,12 @@ def egitmen_ata(payload: CourseInstructorCreate):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{payload.course_id} id'li kurs bulunamadı.",
+            )
+        # FR9 acc6: yalnızca kursun mevcut bir eğitmeni yeni eğitmen ekleyebilir.
+        if not _kurs_egitmeni_mi(cursor, payload.course_id, kullanici["id"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bu kursa yalnızca mevcut eğitmenleri yeni eğitmen ekleyebilir.",
             )
         # [R-instructor] (var + aktif Instructor rolü)
         if not _user_var_mi(cursor, payload.instructor_id):
@@ -234,7 +256,7 @@ def atama_getir(ci_id: int):
         409: {"description": "Pasif atama veya kursta zaten başka bir primary var."},
     },
 )
-def primary_yap(ci_id: int):
+def primary_yap(ci_id: int, kullanici: dict = Depends(rol_gerektir("Instructor"))):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -245,6 +267,12 @@ def primary_yap(ci_id: int):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{ci_id} id'li kurs-eğitmen ataması bulunamadı.",
+            )
+        # FR9 acc6: yalnızca kursun mevcut bir eğitmeni primary değişikliği yapabilir.
+        if not _kurs_egitmeni_mi(cursor, row["course_id"], kullanici["id"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bu işlemi yalnızca kursun mevcut eğitmenleri yapabilir.",
             )
         if row["deleted_date"] is not None:
             raise HTTPException(
@@ -283,7 +311,7 @@ def primary_yap(ci_id: int):
     ),
     responses={404: {"description": "Atama bulunamadı."}},
 )
-def egitmen_kaldir(ci_id: int):
+def egitmen_kaldir(ci_id: int, kullanici: dict = Depends(rol_gerektir("Instructor"))):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -294,6 +322,12 @@ def egitmen_kaldir(ci_id: int):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{ci_id} id'li kurs-eğitmen ataması bulunamadı.",
+            )
+        # FR9 acc6: yalnızca kursun mevcut bir eğitmeni eğitmen çıkarabilir.
+        if not _kurs_egitmeni_mi(cursor, row["course_id"], kullanici["id"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bu kurstan yalnızca mevcut eğitmenleri eğitmen çıkarabilir.",
             )
         if row["deleted_date"] is not None:
             return _satiri_cevir(row)  # zaten kaldırılmış, idempotent

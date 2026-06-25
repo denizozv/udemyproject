@@ -19,8 +19,9 @@ engellenir.
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from auth_deps import rol_gerektir
 from database import get_connection
 from models.category import CategoryCreate, CategoryResponse, CategoryUpdate
 
@@ -50,6 +51,7 @@ def _parent_var_mi(cursor: sqlite3.Cursor, parent_id: int) -> bool:
 
 @router.post(
     "",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=CategoryResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Yeni kategori oluştur",
@@ -159,6 +161,7 @@ def kategori_getir(category_id: int):
 
 @router.put(
     "/{category_id}",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=CategoryResponse,
     summary="Kategoriyi güncelle",
     description=(
@@ -219,6 +222,7 @@ def kategori_guncelle(category_id: int, payload: CategoryUpdate):
 
 @router.patch(
     "/{category_id}/deactivate",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=CategoryResponse,
     summary="Kategoriyi pasife al",
     description=(
@@ -268,6 +272,7 @@ def kategori_pasiflestir(category_id: int):
 
 @router.patch(
     "/{category_id}/activate",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=CategoryResponse,
     summary="Kategoriyi yeniden aktifleştir",
     description="Pasif bir kategoriyi tekrar aktif eder (is_active=1).\n\n**İş kuralı:** [R3] Kategori yoksa **404**.",

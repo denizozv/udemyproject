@@ -14,8 +14,9 @@ KURAL: Endpoint'ler burada YAZILMAZ. Her entity'nin kendi router dosyası
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
+from auth_deps import rol_gerektir
 from database import init_db
 
 
@@ -98,8 +99,10 @@ app.include_router(payment_methods.router)
 app.include_router(payment_statuses.router)
 app.include_router(categories.router)
 app.include_router(users.router)
-app.include_router(user_roles.router)
-app.include_router(blacklist.router)
+# FR11 / FR12: kullanıcı rolleri ve kara liste yönetimi TAMAMEN Admin'e özeldir
+# (okuma dahil) -> router seviyesinde Admin guard'ı.
+app.include_router(user_roles.router, dependencies=[Depends(rol_gerektir("Admin"))])
+app.include_router(blacklist.router, dependencies=[Depends(rol_gerektir("Admin"))])
 app.include_router(courses.router)
 app.include_router(course_instructors.router)
 app.include_router(reviews.router)

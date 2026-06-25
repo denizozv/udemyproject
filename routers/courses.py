@@ -17,8 +17,9 @@ arama (FR4/FR5) -> COURSE_INSTRUCTORS / REVIEWS adımlarında.
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from auth_deps import rol_gerektir
 from database import get_connection
 from models.catalog import (
     CourseCard,
@@ -72,6 +73,30 @@ def _aktif_mi(cursor: sqlite3.Cursor, tablo: str, kayit_id: int) -> bool:
     )
 
 
+def _aktif_egitmen_mi(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> bool:
+    """Kullanıcı bu kursun AKTİF (herhangi) eğitmeni mi? (FR9 acc6 içerik/fiyat düzenleme)"""
+    return (
+        cursor.execute(
+            "SELECT 1 FROM course_instructors "
+            "WHERE course_id = ? AND instructor_id = ? AND deleted_date IS NULL LIMIT 1",
+            (course_id, user_id),
+        ).fetchone()
+        is not None
+    )
+
+
+def _primary_egitmen_mi(cursor: sqlite3.Cursor, course_id: int, user_id: int) -> bool:
+    """Kullanıcı bu kursun AKTİF PRIMARY eğitmeni mi? (FR9 acc6 pasife alma)"""
+    return (
+        cursor.execute(
+            "SELECT 1 FROM course_instructors "
+            "WHERE course_id = ? AND instructor_id = ? AND is_primary = 1 AND deleted_date IS NULL LIMIT 1",
+            (course_id, user_id),
+        ).fetchone()
+        is not None
+    )
+
+
 def _fk_kontrol(cursor: sqlite3.Cursor, category_id: int, language_id: int, difficulty_id: int) -> None:
     """
     [R-fk] category_id/language_id/difficulty_id'nin mevcut VE aktif olduğunu
@@ -104,12 +129,15 @@ def _fk_kontrol(cursor: sqlite3.Cursor, category_id: int, language_id: int, diff
         "olmalı → **400** (FR9 acc4/acc5)."
     ),
     responses={
-        201: {"description": "Kurs oluşturuldu."},
+        201: {"description": "Kurs oluşturuldu; oluşturan eğitmen primary olarak atandı."},
         400: {"description": "Geçersiz/pasif kategori, dil veya zorluk seviyesi."},
+        401: {"description": "Giriş gerekli."},
+        403: {"description": "Instructor rolü gerekli (FR9 acc1)."},
         422: {"description": "Doğrulama hatası (örn. price<=0, course_name boş)."},
     },
 )
-def kurs_olustur(payload: CourseCreate):
+def kurs_olustur(payload: CourseCreate, kullanici: dict = Depends(rol_gerektir("Instructor"))):
+    # FR9 acc1: yalnızca Instructor rolündeki kullanıcı kurs ekleyebilir (Depends ile).
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -127,9 +155,16 @@ def kurs_olustur(payload: CourseCreate):
                 payload.difficulty_id,
             ),
         )
+        yeni_id = cursor.lastrowid
+
+        # Kursu oluşturan eğitmen otomatik PRIMARY eğitmen olarak atanır.
+        # (Sahiplik kurallarının — FR9 acc6 — tutarlı çalışması için.)
+        cursor.execute(
+            "INSERT INTO course_instructors (course_id, instructor_id, is_primary) VALUES (?, ?, 1)",
+            (yeni_id, kullanici["id"]),
+        )
         conn.commit()
 
-        yeni_id = cursor.lastrowid
         row = cursor.execute("SELECT * FROM courses WHERE id = ?", (yeni_id,)).fetchone()
         return _satiri_cevir(row)
     finally:
@@ -451,10 +486,16 @@ def kurs_detay(course_id: int, viewer_user_id: int | None = None):
     responses={
         404: {"description": "Güncellenecek kurs bulunamadı."},
         400: {"description": "Geçersiz/pasif kategori, dil veya zorluk seviyesi."},
+        401: {"description": "Giriş gerekli."},
+        403: {"description": "Instructor değil veya bu kursun eğitmeni değil (FR9 acc6/acc8)."},
         422: {"description": "Doğrulama hatası."},
     },
 )
-def kurs_guncelle(course_id: int, payload: CourseUpdate):
+def kurs_guncelle(
+    course_id: int,
+    payload: CourseUpdate,
+    kullanici: dict = Depends(rol_gerektir("Instructor")),
+):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -464,6 +505,13 @@ def kurs_guncelle(course_id: int, payload: CourseUpdate):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{course_id} id'li kurs bulunamadı.",
+            )
+
+        # FR9 acc6/acc8: yalnızca kursun aktif eğitmeni içerik/fiyat düzenleyebilir.
+        if not _aktif_egitmen_mi(cursor, course_id, kullanici["id"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bu kursu yalnızca kendi eğitmenleri düzenleyebilir.",
             )
 
         _fk_kontrol(cursor, payload.category_id, payload.language_id, payload.difficulty_id)
@@ -500,7 +548,7 @@ def kurs_guncelle(course_id: int, payload: CourseUpdate):
     ),
     responses={404: {"description": "Kurs bulunamadı."}},
 )
-def kurs_pasiflestir(course_id: int):
+def kurs_pasiflestir(course_id: int, kullanici: dict = Depends(rol_gerektir("Instructor"))):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -509,6 +557,12 @@ def kurs_pasiflestir(course_id: int):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{course_id} id'li kurs bulunamadı.",
+            )
+        # FR9 acc6 (BİZ): kursu yalnızca kendi (aktif) eğitmeni pasife alabilir.
+        if not _aktif_egitmen_mi(cursor, course_id, kullanici["id"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bu kursu yalnızca kendi eğitmenleri pasife alabilir.",
             )
         cursor.execute(
             "UPDATE courses SET is_active = 0, deleted_date = datetime('now','localtime') WHERE id = ?",
@@ -528,7 +582,7 @@ def kurs_pasiflestir(course_id: int):
     description="Pasif bir kursu tekrar aktif eder (is_active=1, deleted_date=NULL).\n\n**İş kuralı:** [R3] Kurs yoksa **404**.",
     responses={404: {"description": "Kurs bulunamadı."}},
 )
-def kurs_aktiflestir(course_id: int):
+def kurs_aktiflestir(course_id: int, kullanici: dict = Depends(rol_gerektir("Instructor"))):
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -537,6 +591,12 @@ def kurs_aktiflestir(course_id: int):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{course_id} id'li kurs bulunamadı.",
+            )
+        # FR9 acc6 (BİZ): kursu yalnızca kendi (aktif) eğitmeni yeniden aktifleştirebilir.
+        if not _aktif_egitmen_mi(cursor, course_id, kullanici["id"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bu kursu yalnızca kendi eğitmenleri aktifleştirebilir.",
             )
         cursor.execute(
             "UPDATE courses SET is_active = 1, deleted_date = NULL WHERE id = ?",

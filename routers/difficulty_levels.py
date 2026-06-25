@@ -14,8 +14,9 @@ Uygulanan iş kuralları (kaynak notu):
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from auth_deps import rol_gerektir
 from database import get_connection
 from models.difficulty_level import (
     DifficultyLevelCreate,
@@ -39,6 +40,7 @@ def _satiri_cevir(row: sqlite3.Row) -> DifficultyLevelResponse:
 
 @router.post(
     "",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=DifficultyLevelResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Yeni zorluk seviyesi oluştur",
@@ -142,6 +144,7 @@ def seviye_getir(level_id: int):
 
 @router.put(
     "/{level_id}",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=DifficultyLevelResponse,
     summary="Zorluk seviyesini güncelle",
     description=(
@@ -198,6 +201,7 @@ def seviye_guncelle(level_id: int, payload: DifficultyLevelUpdate):
 
 @router.patch(
     "/{level_id}/deactivate",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=DifficultyLevelResponse,
     summary="Zorluk seviyesini pasife al",
     description=(
@@ -248,6 +252,7 @@ def seviye_pasiflestir(level_id: int):
 
 @router.patch(
     "/{level_id}/activate",
+    dependencies=[Depends(rol_gerektir("Admin"))],
     response_model=DifficultyLevelResponse,
     summary="Zorluk seviyesini yeniden aktifleştir",
     description="Pasif bir kaydı tekrar aktif eder (is_active=1).\n\n**İş kuralı:** [R3] Kayıt yoksa **404**.",

@@ -413,6 +413,22 @@ TABLE_SCHEMAS: list[str] = [
         FOREIGN KEY (payment_status_id) REFERENCES payment_statuses(id)
     );
     """,
+    # --- SESSIONS (Adım 24 - auth altyapısı) ------------------------------
+    # NOT: Bu tablo Excel veri modelinde YOKTUR; kimlik doğrulama (login) için
+    # eklenen bir DESTEK tablosudur (analist onayıyla). Bir domain entity'si değildir.
+    #   token        -> Login'de üretilen rastgele (opak) bearer token. UNIQUE.
+    #   user_id      -> Token'ın ait olduğu kullanıcı. FK -> users.id.
+    #   created_date -> Oturum oluşturulma zamanı.
+    # Çıkış (logout) veya yasaklama (FR12 acc9) durumunda ilgili satır(lar) silinir.
+    """
+    CREATE TABLE IF NOT EXISTS sessions (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        token        TEXT    NOT NULL UNIQUE,
+        user_id      INTEGER NOT NULL,
+        created_date TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+    """,
 ]
 
 

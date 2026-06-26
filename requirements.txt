@@ -1,5 +1,6 @@
 # Python bağımlılıkları
 # Kurulum: pip install -r requirements.txt
+#py -m uvicorn main:app --reload
 
 fastapi          # Web/API çatısı (framework)
 uvicorn[standard]  # Uygulamayı çalıştıran ASGI sunucusu
